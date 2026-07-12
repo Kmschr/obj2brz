@@ -17,3 +17,5 @@ dirs = "6.0"
 # Enables the entropy backend selected in .cargo/config.toml for eframe's ahash
 # dependency when building for browsers.
 getrandom = { version = "0.3", features = ["wasm_js"] }
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Document", "Window", "HtmlCanvasElement"] }

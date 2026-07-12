@@ -888,8 +888,36 @@ fn main() {
     );
 }
 
-// The browser entry point is supplied by the JavaScript host. Keeping a wasm
-// main lets `cargo build --target wasm32-unknown-unknown` produce a valid wasm
-// artifact without pulling native windowing symbols into the target.
+// Browser entry point. Boots eframe's `WebRunner` against the canvas that the
+// host page (see obj2brz-web) supplies, reusing the same [`Obj2Brs`] app the
+// native build runs.
 #[cfg(target_arch = "wasm32")]
-fn main() {}
+fn main() {
+    use eframe::wasm_bindgen::JsCast as _;
+
+    let web_options = eframe::WebOptions::default();
+
+    wasm_bindgen_futures::spawn_local(async {
+        let canvas = web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.get_element_by_id("obj2brz_canvas"))
+            .expect("page is missing the #obj2brz_canvas element")
+            .dyn_into::<web_sys::HtmlCanvasElement>()
+            .expect("#obj2brz_canvas is not a <canvas>");
+
+        eframe::WebRunner::new()
+            .start(
+                canvas,
+                web_options,
+                Box::new(|cc| {
+                    let app = cc
+                        .storage
+                        .and_then(|storage| eframe::get_value::<Obj2Brs>(storage, eframe::APP_KEY))
+                        .unwrap_or_default();
+                    Ok(Box::new(app))
+                }),
+            )
+            .await
+            .expect("failed to start eframe web runner");
+    });
+}
