@@ -44,6 +44,8 @@ pub struct Obj2Brs {
     save_name: String,
     scale: f32,
     simplify: bool,
+    #[serde(default)]
+    rampify: bool,
     split_by_material: bool,
     grid_offset_x: f32,
     grid_offset_y: f32,
@@ -84,6 +86,7 @@ impl Default for Obj2Brs {
             save_name: "test".into(),
             scale: 1.0,
             simplify: false,
+            rampify: false,
             split_by_material: false,
             grid_offset_x: 0.0,
             grid_offset_y: 0.0,
@@ -115,6 +118,7 @@ impl Obj2Brs {
             save_name: self.save_name.clone(),
             scale: self.scale,
             simplify: self.simplify,
+            rampify: self.rampify,
             split_by_material: self.split_by_material,
             grid_offset_x: self.grid_offset_x,
             grid_offset_y: self.grid_offset_y,
@@ -457,13 +461,15 @@ impl Obj2Brs {
         gui::form_grid(ui, "bricks_grid", |ui| {
             ui.label("Brick type")
                 .on_hover_text("Which bricks make up the save. Default gives a stud texture.");
-            ComboBox::from_id_salt("bricktype")
-                .selected_text(format!("{:?}", &mut self.bricktype))
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.bricktype, BrickType::Microbricks, "Microbricks");
-                    ui.selectable_value(&mut self.bricktype, BrickType::Default, "Default");
-                    ui.selectable_value(&mut self.bricktype, BrickType::Tiles, "Tiles");
-                });
+            ui.add_enabled_ui(!self.rampify, |ui| {
+                ComboBox::from_id_salt("bricktype")
+                    .selected_text(format!("{:?}", &mut self.bricktype))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.bricktype, BrickType::Microbricks, "Microbricks");
+                        ui.selectable_value(&mut self.bricktype, BrickType::Default, "Default");
+                        ui.selectable_value(&mut self.bricktype, BrickType::Tiles, "Tiles");
+                    });
+            });
             ui.end_row();
 
             ui.label("Material");
@@ -492,7 +498,13 @@ impl Obj2Brs {
             ui.label("Simplify").on_hover_text(
                 "Merge similar bricks for a less detailed model (reduces brick count)",
             );
-            ui.add(Checkbox::new(&mut self.simplify, "Lossy — fewer bricks"));
+            ui.add_enabled(!self.rampify, Checkbox::new(&mut self.simplify, "Lossy — fewer bricks"));
+            ui.end_row();
+
+            ui.label("Rampify").on_hover_text(
+                "Replace exposed voxels with default ramps and wedges. Runs directly on the voxel octree, without creating one plate brick per voxel.",
+            );
+            ui.add(Checkbox::new(&mut self.rampify, "Smooth slopes"));
             ui.end_row();
         });
     }

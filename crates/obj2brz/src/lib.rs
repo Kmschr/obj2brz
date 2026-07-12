@@ -10,6 +10,7 @@ mod error;
 mod intersect;
 mod logger;
 mod octree;
+mod rampify;
 mod simplify;
 mod voxelize;
 

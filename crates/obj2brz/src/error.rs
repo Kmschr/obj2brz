@@ -15,6 +15,9 @@ pub enum ConversionError {
     #[error("Failed to write save file: {0}")]
     SaveWriteError(String),
 
+    #[error("Rampify could not allocate its voxel grid: {0}")]
+    RampifyGridTooLarge(String),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }

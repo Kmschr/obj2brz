@@ -2,6 +2,7 @@ use crate::brdb_support;
 use crate::error::{ConversionError, ConversionResult, MissingResources};
 use crate::logger::Logger;
 use crate::octree;
+use crate::rampify;
 use crate::simplify::*;
 use crate::voxelize::voxelize;
 
@@ -38,6 +39,8 @@ pub struct ConvertOptions {
     pub save_name: String,
     pub scale: f32,
     pub simplify: bool,
+    #[serde(default)]
+    pub rampify: bool,
     pub split_by_material: bool,
     pub grid_offset_x: f32,
     pub grid_offset_y: f32,
@@ -62,6 +65,7 @@ impl Default for ConvertOptions {
             save_name: "test".into(),
             scale: 1.0,
             simplify: false,
+            rampify: false,
             split_by_material: false,
             grid_offset_x: 0.0,
             grid_offset_y: 0.0,
@@ -213,8 +217,10 @@ pub fn convert(opts: &ConvertOptions, skip_textures: bool) -> ConversionResult<(
                 author_name: opts.save_owner_name.clone(),
             };
 
-            opts.logger.log(format!("Simplifying material {}...", mat_id));
-            if opts.simplify {
+            opts.logger.log(format!("Processing material {}...", mat_id));
+            if opts.rampify {
+                rampify::rampify(&octree, &mut save_data, opts)?;
+            } else if opts.simplify {
                 simplify_lossy(&mut octree, &mut save_data, opts, max_merge);
             } else {
                 simplify_lossless(&mut octree, &mut save_data, opts, max_merge);
@@ -338,7 +344,7 @@ fn load_models_and_materials(
     }
 
     // Scale models
-    scale_models(&mut models, opt.scale, opt.bricktype);
+    scale_models(&mut models, opt.scale, if opt.rampify { BrickType::Default } else { opt.bricktype });
 
     Ok((models, material_images))
 }
@@ -411,12 +417,14 @@ fn write_brz_data(octree: &mut octree::VoxelTree<Vector4<u8>>, opts: &ConvertOpt
     };
 
     if let Some(id) = material_id {
-        opts.logger.log(format!("Simplifying material {}...", id));
+        opts.logger.log(format!("Processing material {}...", id));
     } else {
-        opts.logger.log("Simplifying...".to_string());
+        opts.logger.log(if opts.rampify { "Rampifying..." } else { "Simplifying..." }.to_string());
     }
 
-    if opts.simplify {
+    if opts.rampify {
+        rampify::rampify(octree, &mut save_data, opts)?;
+    } else if opts.simplify {
         simplify_lossy(octree, &mut save_data, opts, max_merge);
     } else {
         simplify_lossless(octree, &mut save_data, opts, max_merge);
@@ -437,7 +445,7 @@ fn write_brz_data(octree: &mut octree::VoxelTree<Vector4<u8>>, opts: &ConvertOpt
     let output_file_path = output_file_path(opts);
 
     // Determine if we should use procedural bricks based on brick type
-    let use_procedural = opts.bricktype != BrickType::Default;
+    let use_procedural = opts.rampify || opts.bricktype != BrickType::Default;
 
     brdb_support::write_brz(
         output_file_path.clone(),

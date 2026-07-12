@@ -194,4 +194,38 @@ impl<T> VoxelTree<T> {
         // No valid points in branch
         None
     }
+
+    /// Visits each occupied voxel without expanding or mutating the tree.
+    pub fn for_each_leaf(&self, mut visitor: impl FnMut(Vector3<isize>, &T)) {
+        let mask = 1 << self.size;
+        Self::for_each_leaf_recursive(
+            &self.contents,
+            mask,
+            Vector3::new(-mask, -mask, -mask),
+            &mut visitor,
+        );
+    }
+
+    fn for_each_leaf_recursive<F>(
+        branches: &Branches<T>,
+        mask: isize,
+        voxel: Vector3<isize>,
+        visitor: &mut F,
+    ) where
+        F: FnMut(Vector3<isize>, &T),
+    {
+        let m = mask >> 1;
+        for (index, branch) in branches.iter().enumerate() {
+            let mut child_voxel = voxel;
+            let step = 2 * m + (m == 0) as isize;
+            child_voxel.x += step * ((index & 4) != 0) as isize;
+            child_voxel.y += step * ((index & 2) != 0) as isize;
+            child_voxel.z += step * ((index & 1) != 0) as isize;
+            match branch {
+                TreeBody::Leaf(value) if m == 0 => visitor(child_voxel, value),
+                TreeBody::Branch(children) if m != 0 => Self::for_each_leaf_recursive(children, m, child_voxel, visitor),
+                _ => {}
+            }
+        }
+    }
 }
