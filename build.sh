@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Build script for obj2brz - builds for both Linux and Windows
+# Build script for obj2brz - builds the CLI and GUI for Linux and Windows
 
 set -e  # Exit on error
 
@@ -11,15 +11,19 @@ echo "==================================="
 # Create output directory
 mkdir -p dist
 
-echo ""
-echo "Building for Linux (x86_64)..."
-cargo build --release --target x86_64-unknown-linux-gnu
-cp target/x86_64-unknown-linux-gnu/release/obj2brz dist/obj2brz-linux-x86_64
+# obj2brz  -> CLI binary (crate: obj2brz-cli)
+# obj2brz-gui -> desktop GUI binary (crate: obj2brz-gui)
+build_target() {
+    local target="$1" suffix="$2" ext="$3"
+    echo ""
+    echo "Building for ${suffix} (${target})..."
+    cargo build --release --target "$target" -p obj2brz-cli -p obj2brz-gui
+    cp "target/${target}/release/obj2brz${ext}" "dist/obj2brz-${suffix}${ext}"
+    cp "target/${target}/release/obj2brz-gui${ext}" "dist/obj2brz-gui-${suffix}${ext}"
+}
 
-echo ""
-echo "Building for Windows (x86_64)..."
-cargo build --release --target x86_64-pc-windows-gnu
-cp target/x86_64-pc-windows-gnu/release/obj2brz.exe dist/obj2brz-windows-x86_64.exe
+build_target x86_64-unknown-linux-gnu linux-x86_64 ""
+build_target x86_64-pc-windows-gnu windows-x86_64 ".exe"
 
 echo ""
 echo "==================================="

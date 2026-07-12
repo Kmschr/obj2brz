@@ -1,0 +1,14 @@
+[package]
+name = "obj2brz-cli"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "Command-line OBJ to Brickadia converter"
+
+[[bin]]
+name = "obj2brz"
+path = "src/main.rs"
+
+[dependencies]
+obj2brz.workspace = true
+lexopt = "0.3"

@@ -1,6 +1,6 @@
 use crate::color::*;
 use crate::octree::{TreeBody, VoxelTree};
-use crate::{BrickType, Obj2Brs, SaveData};
+use crate::{BrickType, ConvertOptions, SaveData};
 
 use brdb::{Brick, BrickSize, BrickType as BrdbBrickType, Color, Direction, Position, Rotation};
 use cgmath::{Vector3, Vector4};
@@ -15,7 +15,7 @@ pub enum BrickColor {
 pub fn simplify_lossy(
     octree: &mut VoxelTree<Vector4<u8>>,
     save_data: &mut SaveData,
-    opts: &Obj2Brs,
+    opts: &ConvertOptions,
     max_merge: isize,
 ) {
     let colorset = convert_colorset_to_hsv(&save_data.colors);
@@ -143,7 +143,7 @@ pub fn simplify_lossy(
 pub fn simplify_lossless(
     octree: &mut VoxelTree<Vector4<u8>>,
     save_data: &mut SaveData,
-    opts: &Obj2Brs,
+    opts: &ConvertOptions,
     max_merge: isize,
 ) {
     let d: isize = 1 << octree.size;
@@ -298,7 +298,7 @@ pub fn simplify_lossless(
 }
 
 fn create_brick(
-    opts: &Obj2Brs,
+    opts: &ConvertOptions,
     palette: &[Color],
     scale: (isize, isize, isize),
     size: (isize, isize, isize),

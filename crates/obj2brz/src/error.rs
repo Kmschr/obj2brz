@@ -29,6 +29,12 @@ pub struct MissingResources {
     pub missing_materials: bool,
 }
 
+impl Default for MissingResources {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MissingResources {
     pub fn new() -> Self {
         Self {

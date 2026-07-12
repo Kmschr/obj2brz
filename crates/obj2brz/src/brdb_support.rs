@@ -1,10 +1,10 @@
-use crate::{Obj2Brs, OutputFormat, SaveData};
+use crate::{ConvertOptions, OutputFormat, SaveData};
 use crate::error::{ConversionError, ConversionResult};
 use std::path::{Path, PathBuf};
 use brdb::{Brz, BundleAuthor, Entity, Guid, Owner, World};
 use uuid::Uuid;
 
-fn copy_path_to_clipboard(path: &Path, opts: &Obj2Brs) -> ConversionResult<()> {
+fn copy_path_to_clipboard(path: &Path, opts: &ConvertOptions) -> ConversionResult<()> {
     if !opts.copy_to_clipboard {
         return Ok(());
     }
@@ -48,7 +48,7 @@ fn copy_path_to_clipboard(path: &Path, opts: &Obj2Brs) -> ConversionResult<()> {
 pub fn write_brz(
     path: PathBuf,
     data: &SaveData,
-    opts: &Obj2Brs,
+    opts: &ConvertOptions,
     _use_procedural: bool,
     preview_image: Option<Vec<u8>>,
 ) -> ConversionResult<()> {
@@ -78,7 +78,7 @@ pub fn write_brz(
 pub fn write_brz_grids(
     path: PathBuf,
     grids: Vec<(Entity, Vec<brdb::Brick>)>,
-    opts: &Obj2Brs,
+    opts: &ConvertOptions,
     preview_image: Option<Vec<u8>>,
 ) -> ConversionResult<()> {
     let mut world = World::new();
@@ -111,7 +111,7 @@ pub fn write_brz_grids(
     write_world(path, world, opts)
 }
 
-fn configure_world(world: &mut World, opts: &Obj2Brs) -> ConversionResult<()> {
+fn configure_world(world: &mut World, opts: &ConvertOptions) -> ConversionResult<()> {
     let owner_id = Uuid::parse_str(&opts.save_owner_id)
         .map(Guid::from)
         .map_err(|e| ConversionError::SaveWriteError(format!("Invalid owner UUID: {e}")))?;
@@ -145,7 +145,7 @@ fn configure_world(world: &mut World, opts: &Obj2Brs) -> ConversionResult<()> {
     Ok(())
 }
 
-fn write_world(path: PathBuf, world: World, opts: &Obj2Brs) -> ConversionResult<()> {
+fn write_world(path: PathBuf, world: World, opts: &ConvertOptions) -> ConversionResult<()> {
     let result = match opts.output_format {
         OutputFormat::Brz => {
             // Level 6 is near the size of level 14, but dramatically faster on
@@ -176,7 +176,7 @@ mod tests {
             std::process::id(),
             nonce
         ));
-        let opts = Obj2Brs::default();
+        let opts = ConvertOptions::default();
         let data = SaveData {
             bricks: vec![Brick::default()],
             colors: Vec::new(),
