@@ -1,4 +1,4 @@
-# Rustfmt configuration for obj2brs
+# Rustfmt configuration for obj2brz
 
 # Use Rust 2021 edition formatting
 edition = "2021"

@@ -67,7 +67,7 @@ pub fn write_brz(
         id: opts.save_owner_id.clone(),
         name: data.author_name.clone(),
     }];
-    world.meta.bundle.description = "Converted with obj2brs".to_string();
+    world.meta.bundle.description = "Converted with obj2brz".to_string();
 
     // Copy bricks directly - they're already in brdb format.
     world.bricks = data.bricks.clone();
@@ -96,7 +96,7 @@ pub fn write_brz_grids(
         id: opts.save_owner_id.clone(),
         name: opts.save_owner_name.clone(),
     }];
-    world.meta.bundle.description = "Converted with obj2brs (split by material)".to_string();
+    world.meta.bundle.description = "Converted with obj2brz (split by material)".to_string();
 
     // Add each material's bricks as a separate frozen grid
     let total_bricks: usize = grids.iter().map(|(_, bricks)| bricks.len()).sum();
@@ -172,7 +172,7 @@ mod tests {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "obj2brs-{}-{}.brz",
+            "obj2brz-{}-{}.brz",
             std::process::id(),
             nonce
         ));

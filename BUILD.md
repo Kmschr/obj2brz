@@ -1,6 +1,6 @@
-# Building obj2brs for Multiple Platforms
+# Building obj2brz for Multiple Platforms
 
-This project includes scripts to build obj2brs for both Linux and Windows.
+This project includes scripts to build obj2brz for both Linux and Windows.
 
 ## Quick Start
 
@@ -26,8 +26,8 @@ Once setup is complete, build for all platforms:
 ```
 
 The compiled binaries will be placed in the `dist/` directory:
-- `dist/obj2brs-linux-x86_64` - Linux executable
-- `dist/obj2brs-windows-x86_64.exe` - Windows executable (with icon embedded)
+- `dist/obj2brz-linux-x86_64` - Linux executable
+- `dist/obj2brz-windows-x86_64.exe` - Windows executable (with icon embedded)
 
 ## Manual Building
 
@@ -45,6 +45,6 @@ cargo build --release --target x86_64-pc-windows-gnu
 
 ## Notes
 
-- The Windows executable will have the obj2brs icon embedded automatically via the `build.rs` script
+- The Windows executable will have the obj2brz icon embedded automatically via the `build.rs` script
 - Cross-compilation requires MinGW-w64 to be installed on your system
 - The build script uses the GNU ABI for Windows compatibility

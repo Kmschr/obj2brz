@@ -1,4 +1,4 @@
-# obj2brs
+# obj2brz
 
 a5 adaptation of [textured-voxelizer](https://github.com/CheezBarger/textured-voxelizer) by Suficio
 

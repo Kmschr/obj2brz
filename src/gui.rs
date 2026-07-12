@@ -64,10 +64,10 @@ pub fn footer(ctx: &Context) {
     TopBottomPanel::bottom("footer").show(ctx, |ui: &mut Ui| {
         ui.vertical_centered(|ui| {
             ui.add_space(10.);
-            ui.add(Label::new(RichText::new("obj2brs").monospace()));
+            ui.add(Label::new(RichText::new("obj2brz").monospace()));
             ui.label("by Smallguy/Kmschr and Suficio");
             let text = format!("{} {}", GITHUB, "GitHub");
-            ui.add(Hyperlink::from_label_and_url(text, "https://github.com/kmschr/obj2brs"));
+            ui.add(Hyperlink::from_label_and_url(text, "https://github.com/kmschr/obj2brz"));
             ui.add_space(10.);
         });
     });

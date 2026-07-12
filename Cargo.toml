@@ -1,5 +1,5 @@
 [package]
-name = "obj2brs"
+name = "obj2brz"
 version = "0.2.0"
 authors = ["Kmschr <Kmschr@gmail.com>"]
 edition = "2021"
@@ -12,7 +12,7 @@ include = ["reference.brs"]
 [dependencies]
 tobj = "4.0"
 # Use the actively developed BRDB writer. This is intentionally a sibling path,
-# matching bls2brz, so obj2brs receives the current Brickadia format fixes.
+# matching bls2brz, so obj2brz receives the current Brickadia format fixes.
 brdb = { path = "../brdb/crates/brdb" }
 cgmath = "0.18"
 image = "0.24"

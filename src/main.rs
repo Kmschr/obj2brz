@@ -124,7 +124,7 @@ impl Default for Obj2Brs {
             copy_to_clipboard: false,
             output_format: OutputFormat::Brz,
             save_owner_id: "d66c4ad5-59fc-4a9b-80b8-08dedc25bff9".into(),
-            save_owner_name: "obj2brs".into(),
+            save_owner_name: "obj2brz".into(),
             save_name: "test".into(),
             scale: 1.0,
             simplify: false,
@@ -1005,7 +1005,7 @@ fn output_file_path(opts: &Obj2Brs) -> PathBuf {
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
     let logger = Logger::new();
-    logger.log("obj2brs started - ready to convert OBJ files to Brickadia saves".to_string());
+    logger.log("obj2brz started - ready to convert OBJ files to Brickadia saves".to_string());
 
     let build_dir = match env::consts::OS {
         "windows" => {
@@ -1036,7 +1036,7 @@ fn main() {
         ..Default::default()
     };
     let _ = run_native(
-        "obj2brs",
+        "obj2brz",
         win_option,
         Box::new(move |cc| {
             // Load previous state if available

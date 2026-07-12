@@ -1,4 +1,4 @@
-# Clippy configuration for obj2brs
+# Clippy configuration for obj2brz
 
 # Warn about TODO/FIXME comments
 warn-on-all-wildcard-imports = true
