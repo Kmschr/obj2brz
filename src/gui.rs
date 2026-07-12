@@ -15,6 +15,7 @@ use egui::{
 
 const BUTTON_COLOR: Color32 = Color32::from_rgb(15, 98, 254);
 const ERROR_COLOR: Color32 = Color32::from_rgb(255, 168, 168);
+#[cfg(not(target_arch = "wasm32"))]
 const FOLDER_COLOR: Color32 = Color32::from_rgb(255, 206, 70);
 
 pub fn add_grid(ui: &mut Ui, mut contents: impl FnMut(&mut Ui)) {
@@ -46,6 +47,7 @@ pub fn button(ui: &mut Ui, text: &str, enabled: bool) -> bool {
     ui.add_enabled(enabled, b).on_hover_text("WARNING! WILL OVERWRITE ANY EXISTING BRS").clicked()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn file_button(ui: &mut Ui) -> bool {
     ui.button(RichText::new("🗁").color(FOLDER_COLOR)).clicked()
 }

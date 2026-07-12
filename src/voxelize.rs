@@ -25,15 +25,21 @@ pub fn voxelize(
 ) -> VoxelTree<Vector4<u8>> {
     let mut octree = VoxelTree::<Vector4<u8>>::new();
 
-    // Determine model AABB to expand triangle octree to final size
-    // Models are already scaled by scale_models()
-    let u = &models[0].mesh.positions; // Guess initial
-    let mut min = Vector3::new(u[0], u[1], u[2]);
+    // Determine model AABB to expand triangle octree to final size. OBJ files
+    // may contain empty groups; never assume the first model has geometry.
+    let Some(first_positions) = models
+        .iter()
+        .map(|model| &model.mesh.positions)
+        .find(|positions| positions.len() >= 3)
+    else {
+        return octree;
+    };
+    let mut min = Vector3::new(first_positions[0], first_positions[1], first_positions[2]);
     let mut max = min;
 
     for m in models.iter() {
         let p = &m.mesh.positions;
-        for v in (0..p.len()).step_by(3) {
+        for v in (0..p.len() / 3 * 3).step_by(3) {
             for m in 0..3 {
                 min[m] = min[m].min(p[v + m]);
                 max[m] = max[m].max(p[v + m]);
@@ -71,37 +77,29 @@ pub fn voxelize(
             }
         }
 
-        for n in (0..mesh.indices.len()).step_by(3) {
-            let mut m = (3 * mesh.indices[n]) as usize;
-            let v0 = Vector3::new(
-                mesh.positions[m],
-                mesh.positions[m + 1],
-                mesh.positions[m + 2],
-            );
-            m = (3 * mesh.indices[n + 1]) as usize;
-            let v1 = Vector3::new(
-                mesh.positions[m],
-                mesh.positions[m + 1],
-                mesh.positions[m + 2],
-            );
-            m = (3 * mesh.indices[n + 2]) as usize;
-            let v2 = Vector3::new(
-                mesh.positions[m],
-                mesh.positions[m + 1],
-                mesh.positions[m + 2],
-            );
+        for indices in mesh.indices.chunks_exact(3) {
+            let vertex = |index: u32| {
+                let index = index as usize * 3;
+                mesh.positions
+                    .get(index..index + 3)
+                    .map(|position| Vector3::new(position[0], position[1], position[2]))
+            };
+            let (Some(v0), Some(v1), Some(v2)) =
+                (vertex(indices[0]), vertex(indices[1]), vertex(indices[2]))
+            else {
+                // A malformed face should not take the whole conversion down.
+                continue;
+            };
 
-            let uvs = if !mesh.texcoords.is_empty() {
-                m = (2 * mesh.indices[n]) as usize;
-                let uv0 = Vector2::new(mesh.texcoords[m], mesh.texcoords[m + 1]);
-                m = (2 * mesh.indices[n + 1]) as usize;
-                let uv1 = Vector2::new(mesh.texcoords[m], mesh.texcoords[m + 1]);
-                m = (2 * mesh.indices[n + 2]) as usize;
-                let uv2 = Vector2::new(mesh.texcoords[m], mesh.texcoords[m + 1]);
-
-                Some([uv0, uv1, uv2])
-            } else {
-                None
+            let uv = |index: u32| {
+                let index = index as usize * 2;
+                mesh.texcoords
+                    .get(index..index + 2)
+                    .map(|coords| Vector2::new(coords[0], coords[1]))
+            };
+            let uvs = match (uv(indices[0]), uv(indices[1]), uv(indices[2])) {
+                (Some(uv0), Some(uv1), Some(uv2)) => Some([uv0, uv1, uv2]),
+                _ => None,
             };
 
             let triangle = Triangle {
@@ -150,19 +148,26 @@ fn recursive_voxelize(
                     Some(intersection) => {
                         // Only calculate colors if in root level
                         if m == 0 {
-                            if let Some(id) = triangle.material_id {
+                            // Missing material assignments and material IDs that
+                            // do not resolve are common in exported OBJ files.
+                            // Use the first (default) material rather than
+                            // silently generating black/NaN-colored bricks.
+                            let material = triangle
+                                .material_id
+                                .and_then(|id| materials.get(id))
+                                .or_else(|| materials.first());
+                            if let Some(material) = material {
                                 let uv =
                                     interpolate_uv(&triangle.vertices, &triangle.uvs, intersection);
-                                let m = &materials[id];
+                                let width = material.width().saturating_sub(1);
+                                let height = material.height().saturating_sub(1);
+                                let u = ((uv[0] - uv[0].floor()) * width as f32) as u32;
+                                let v = ((1. - uv[1] + uv[1].floor()) * height as f32) as u32;
 
-                                let u = ((uv[0] - uv[0].floor()) * (m.width() - 1) as f32) as u32;
-                                let v =
-                                    ((1. - uv[1] + uv[1].floor()) * (m.height() - 1) as f32) as u32;
-
-                                let c = *m.get_pixel(u, v);
+                                let c = *material.get_pixel(u, v);
                                 if c[3] == 0 {
                                     continue;
-                                } // If alpha is zero, skeedaddle
+                                }
                                 colors.push(Vector4::<u8>::new(c[0], c[1], c[2], c[3]));
                             }
                         }

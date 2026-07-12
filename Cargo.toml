@@ -1,8 +1,9 @@
 [package]
 name = "obj2brs"
-version = "0.1.3"
+version = "0.2.0"
 authors = ["Kmschr <Kmschr@gmail.com>"]
 edition = "2021"
+description = "Convert OBJ models into Brickadia prefabs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -10,7 +11,9 @@ include = ["reference.brs"]
 
 [dependencies]
 tobj = "4.0"
-brdb = "0.5"
+# Use the actively developed BRDB writer. This is intentionally a sibling path,
+# matching bls2brz, so obj2brs receives the current Brickadia format fixes.
+brdb = { path = "../brdb/crates/brdb" }
 cgmath = "0.18"
 image = "0.24"
 uuid = "1.0"
@@ -20,5 +23,13 @@ thiserror = "2.0"
 dirs = "6.0"
 rfd = "0.17"
 serde = { version = "1.0", features = ["derive"] }
+
+[target.'cfg(windows)'.dependencies]
+clipboard-win = { version = "5.4.1", features = ["windows-win"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Enables the entropy backend selected in .cargo/config.toml for eframe/tobj's
+# ahash dependency when building for browsers.
+getrandom = { version = "0.3", features = ["wasm_js"] }
 
 [features]

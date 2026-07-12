@@ -342,6 +342,7 @@ fn create_brick(
         id: None,
         asset: brick_type,
         owner_index: None,
+        original_owner_index: None,
         position,
         rotation: Rotation::Deg0,
         direction: Direction::ZPositive,

@@ -1,0 +1,4 @@
+[target.wasm32-unknown-unknown]
+# eframe and tobj use ahash, which needs a browser entropy backend on the
+# filesystem-less wasm32-unknown-unknown target.
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']

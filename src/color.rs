@@ -1,7 +1,7 @@
 use cgmath::Vector4;
 
 pub fn ftoi(v: f32) -> u8 {
-    (v * 255.).round() as u8
+    (v.clamp(0.0, 1.0) * 255.).round() as u8
 }
 
 pub fn itof(v: u8) -> f32 {
@@ -109,6 +109,12 @@ pub fn hsv_distance(a: &Vector4<f32>, b: &Vector4<f32>) -> f32 {
 }
 
 pub fn hsv_average(colors: &[Vector4<u8>]) -> Vector4<f32> {
+    // OBJ meshes can omit materials or UVs. Keep their fallback color stable
+    // instead of producing NaNs from a zero-length average.
+    if colors.is_empty() {
+        return Vector4::new(0.0, 0.0, 1.0, 1.0);
+    }
+
     let (mut h_sum, mut s_sum, mut v_sum, mut a_sum) = (0., 0., 0., 0.);
     for c in colors {
         let color = rgb2hsv(*c);

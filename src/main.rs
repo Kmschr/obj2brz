@@ -3,6 +3,7 @@ mod brdb_support;
 mod color;
 mod error;
 mod gui;
+#[cfg(not(target_arch = "wasm32"))]
 mod icon;
 mod intersect;
 mod logger;
@@ -13,17 +14,23 @@ mod voxelize;
 
 use brdb::{Brick, Color, Entity};
 use cgmath::Vector4;
-use eframe::{egui, egui::*, run_native, App, NativeOptions};
+use eframe::{egui, egui::*, App};
+#[cfg(not(target_arch = "wasm32"))]
+use eframe::{run_native, NativeOptions};
 use error::{ConversionError, ConversionResult, MissingResources};
 use gui::bool_color;
 use logger::Logger;
-use rfd::{FileDialog, MessageDialog, MessageLevel};
+#[cfg(not(target_arch = "wasm32"))]
+use rfd::FileDialog;
+use rfd::{MessageDialog, MessageLevel};
 use serde::{Deserialize, Serialize};
 use simplify::*;
 use std::{
-    env, io::Cursor, ops::RangeInclusive, path::Path, path::PathBuf, sync::mpsc,
+    io::Cursor, ops::RangeInclusive, path::Path, path::PathBuf, sync::mpsc,
     sync::mpsc::Receiver, thread,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use std::env;
 use tobj::LoadOptions;
 use uuid::Uuid;
 use voxelize::voxelize;
@@ -36,7 +43,9 @@ pub struct SaveData {
     pub author_name: String,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 const WINDOW_WIDTH: f32 = 600.;
+#[cfg(not(target_arch = "wasm32"))]
 const WINDOW_HEIGHT: f32 = 700.;
 
 const OBJ_ICON: &[u8; 10987] = include_bytes!("../res/obj_icon.png");
@@ -54,6 +63,8 @@ pub struct Obj2Brs {
     #[serde(skip)]
     output_directory_receiver: Option<Receiver<Option<PathBuf>>>,
     output_directory: String,
+    copy_to_clipboard: bool,
+    output_format: OutputFormat,
     save_owner_id: String,
     save_owner_name: String,
     save_name: String,
@@ -92,6 +103,12 @@ pub enum Material {
     Ghost,
 }
 
+#[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
+pub enum OutputFormat {
+    Brz,
+    Brdb,
+}
+
 impl Default for Obj2Brs {
     fn default() -> Self {
         Self {
@@ -104,6 +121,8 @@ impl Default for Obj2Brs {
             material_intensity: 5,
             output_directory_receiver: None,
             output_directory: "builds".into(),
+            copy_to_clipboard: false,
+            output_format: OutputFormat::Brz,
             save_owner_id: "d66c4ad5-59fc-4a9b-80b8-08dedc25bff9".into(),
             save_owner_name: "obj2brs".into(),
             save_name: "test".into(),
@@ -136,7 +155,12 @@ impl App for Obj2Brs {
         let input_file_valid = Path::new(&self.input_file_path).exists();
         let output_dir_valid = Path::new(&self.output_directory).is_dir();
         let uuid_valid = Uuid::parse_str(&self.save_owner_id).is_ok();
-        let can_convert = input_file_valid && output_dir_valid && uuid_valid && !self.conversion_in_progress;
+        let options_valid = self.conversion_settings_error().is_none();
+        let can_convert = input_file_valid
+            && output_dir_valid
+            && uuid_valid
+            && options_valid
+            && !self.conversion_in_progress;
 
         // Show missing resources dialog if needed
         self.show_missing_resources_dialog(ctx);
@@ -256,6 +280,7 @@ impl Obj2Brs {
                     .desired_width(400.0)
                     .text_color(file_color),
             );
+            #[cfg(not(target_arch = "wasm32"))]
             if gui::file_button(ui) && self.input_file_path_receiver.is_none() {
                 let (tx, rx) = mpsc::channel();
                 self.input_file_path_receiver = Some(rx);
@@ -264,6 +289,9 @@ impl Obj2Brs {
                     let _ = tx.send(obj_path);
                 });
             }
+            #[cfg(target_arch = "wasm32")]
+            ui.add_enabled(false, Button::new("🗁"))
+                .on_hover_text("File pickers are available in the native application.");
         });
         ui.end_row();
 
@@ -277,6 +305,7 @@ impl Obj2Brs {
                     .desired_width(400.0)
                     .text_color(dir_color),
             );
+            #[cfg(not(target_arch = "wasm32"))]
             if gui::file_button(ui) && self.output_directory_receiver.is_none() {
                 let (tx, rx) = mpsc::channel();
                 self.output_directory_receiver = Some(rx);
@@ -290,13 +319,37 @@ impl Obj2Brs {
                     let _ = tx.send(output_dir);
                 });
             }
+            #[cfg(target_arch = "wasm32")]
+            ui.add_enabled(false, Button::new("🗁"))
+                .on_hover_text("Browser builds do not have a writable output directory.");
         });
         ui.end_row();
 
         ui.label("Save Name")
-            .on_hover_text("Name for the Brickadia savefile (.brz format)");
+            .on_hover_text("Name for the Brickadia savefile");
         ui.add(TextEdit::singleline(&mut self.save_name));
         ui.end_row();
+
+        ui.label("Output Format")
+            .on_hover_text("BRZ is a compact prefab archive. BRDB is an editable Brickadia world directory.");
+        ComboBox::from_label("")
+            .selected_text(match self.output_format {
+                OutputFormat::Brz => "BRZ (prefab archive)",
+                OutputFormat::Brdb => "BRDB (editable world)",
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut self.output_format, OutputFormat::Brz, "BRZ (prefab archive)");
+                ui.selectable_value(&mut self.output_format, OutputFormat::Brdb, "BRDB (editable world)");
+            });
+        ui.end_row();
+
+        #[cfg(target_os = "windows")]
+        {
+            ui.label("");
+            ui.checkbox(&mut self.copy_to_clipboard, "Copy to clipboard")
+                .on_hover_text("Copy the save file path to clipboard after generation");
+            ui.end_row();
+        }
     }
 
     fn options(&mut self, ui: &mut Ui, _uuid_valid: bool) {
@@ -457,6 +510,15 @@ impl Obj2Brs {
     }
 
     fn do_conversion(&mut self) {
+        if let Some(error) = self.conversion_settings_error() {
+            MessageDialog::new()
+                .set_level(MessageLevel::Error)
+                .set_title("Conversion Error")
+                .set_description(&error)
+                .show();
+            return;
+        }
+
         // Validate resources before conversion
         let missing = match validate_obj_resources(&self.input_file_path) {
             Ok(m) => m,
@@ -481,6 +543,20 @@ impl Obj2Brs {
         self.continue_conversion(false);
     }
 
+    fn conversion_settings_error(&self) -> Option<String> {
+        if !self.scale.is_finite() || self.scale <= 0.0 {
+            return Some("Scale must be a positive, finite number.".to_string());
+        }
+        if self.save_name.trim().is_empty()
+            || self.save_name.contains(['/', '\\'])
+            || self.save_name == "."
+            || self.save_name == ".."
+        {
+            return Some("Save name must be a filename, not a path.".to_string());
+        }
+        None
+    }
+
     fn continue_conversion(&mut self, skip_textures: bool) {
         self.conversion_in_progress = true;
         self.logger.log("Starting conversion...".to_string());
@@ -493,6 +569,7 @@ impl Obj2Brs {
         let input_file_path = self.input_file_path.clone();
         let output_directory = self.output_directory.clone();
         let save_name = self.save_name.clone();
+        let save_owner_id = self.save_owner_id.clone();
         let save_owner_name = self.save_owner_name.clone();
         let scale = self.scale;
         let bricktype = self.bricktype;
@@ -505,6 +582,8 @@ impl Obj2Brs {
         let brick_scale = self.brick_scale;
         let material = self.material;
         let material_intensity = self.material_intensity;
+        let copy_to_clipboard = self.copy_to_clipboard;
+        let output_format = self.output_format;
         let logger = self.logger.clone();
 
         // Spawn background thread for conversion
@@ -520,7 +599,9 @@ impl Obj2Brs {
                 material_intensity,
                 output_directory_receiver: None,
                 output_directory,
-                save_owner_id: "d66c4ad5-59fc-4a9b-80b8-08dedc25bff9".into(),
+                copy_to_clipboard,
+                output_format,
+                save_owner_id,
                 save_owner_name,
                 save_name,
                 scale,
@@ -588,13 +669,12 @@ fn validate_obj_resources(obj_path: &str) -> ConversionResult<MissingResources> 
 
     let mut missing = MissingResources::new();
 
-    // Check if materials exist
+    // Materials are optional in OBJ. The converter deliberately supports
+    // untextured meshes with a white fallback, so only report missing texture
+    // files for materials that actually reference one.
     let materials = match materials {
         Ok(mats) if !mats.is_empty() => mats,
-        Ok(_) | Err(_) => {
-            missing.missing_materials = true;
-            return Ok(missing);
-        }
+        Ok(_) | Err(_) => return Ok(missing),
     };
 
     // Check each material for missing textures
@@ -620,10 +700,14 @@ fn perform_conversion(opts: &Obj2Brs, skip_textures: bool) -> ConversionResult<(
         // Load models and materials once
         opts.logger.log("Loading models and materials...".to_string());
         let (mut models, material_images) = load_models_and_materials(opts, skip_textures)?;
-        let material_count = material_images.len();
+        let material_count = models
+            .iter()
+            .filter_map(|model| model.mesh.material_id)
+            .max()
+            .map_or(0, |id| id + 1);
 
         if material_count == 0 {
-            opts.logger.log("No materials found, falling back to single grid".to_string());
+            opts.logger.log("No material assignments found, using a single grid".to_string());
             let mut octree = voxelize_models(&mut models, &material_images, opts, None);
             return write_brz_data(&mut octree, opts, None);
         }
@@ -697,6 +781,14 @@ fn load_models_and_materials(
     };
     let (mut models, materials) = tobj::load_obj(&opt.input_file_path, &load_options)
         .map_err(|e| ConversionError::ObjParseError(e.to_string()))?;
+
+    if !models.iter().any(|model| {
+        model.mesh.indices.len() >= 3 && model.mesh.positions.len() >= 3
+    }) {
+        return Err(ConversionError::ObjParseError(
+            "OBJ contains no triangle geometry to voxelize".to_string(),
+        ));
+    }
 
     opt.logger.log("Loading materials...".to_string());
     let mut material_images = Vec::<image::RgbaImage>::new();
@@ -860,8 +952,7 @@ fn write_brz_data(octree: &mut octree::VoxelTree<Vector4<u8>>, opts: &Obj2Brs, m
         .write_to(&mut Cursor::new(&mut preview_bytes_jpg), image::ImageOutputFormat::Jpeg(85))
         .map_err(|e| ConversionError::SaveWriteError(format!("Failed to encode JPEG preview: {}", e)))?;
 
-    let output_file_path =
-        PathBuf::from(&opts.output_directory).join(opts.save_name.clone() + ".brz");
+    let output_file_path = output_file_path(opts);
 
     // Determine if we should use procedural bricks based on brick type
     let use_procedural = opts.bricktype != BrickType::Default;
@@ -890,8 +981,7 @@ fn write_brz_with_grids(opts: &Obj2Brs, grids: Vec<(Entity, Vec<Brick>)>) -> Con
         .write_to(&mut Cursor::new(&mut preview_bytes_jpg), image::ImageOutputFormat::Jpeg(85))
         .map_err(|e| ConversionError::SaveWriteError(format!("Failed to encode JPEG preview: {}", e)))?;
 
-    let output_file_path =
-        PathBuf::from(&opts.output_directory).join(opts.save_name.clone() + ".brz");
+    let output_file_path = output_file_path(opts);
 
     brdb_support::write_brz_grids(
         output_file_path.clone(),
@@ -904,6 +994,15 @@ fn write_brz_with_grids(opts: &Obj2Brs, grids: Vec<(Entity, Vec<Brick>)>) -> Con
     Ok(())
 }
 
+fn output_file_path(opts: &Obj2Brs) -> PathBuf {
+    let extension = match opts.output_format {
+        OutputFormat::Brz => "brz",
+        OutputFormat::Brdb => "brdb",
+    };
+    PathBuf::from(&opts.output_directory).join(format!("{}.{}", opts.save_name, extension))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn main() {
     let logger = Logger::new();
     logger.log("obj2brs started - ready to convert OBJ files to Brickadia saves".to_string());
@@ -964,7 +1063,16 @@ fn main() {
             app.missing_resources_dialog = None;
             app.pending_conversion_skip_textures = false;
 
+            // Force dark theme
+            cc.egui_ctx.set_visuals(egui::Visuals::dark());
+
             Ok(Box::new(app))
         }),
     );
 }
+
+// The browser entry point is supplied by the JavaScript host. Keeping a wasm
+// main lets `cargo build --target wasm32-unknown-unknown` produce a valid wasm
+// artifact without pulling native windowing symbols into the target.
+#[cfg(target_arch = "wasm32")]
+fn main() {}
