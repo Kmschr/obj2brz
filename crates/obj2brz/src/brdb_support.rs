@@ -45,24 +45,21 @@ fn copy_path_to_clipboard(path: &Path, opts: &ConvertOptions) -> ConversionResul
     Ok(())
 }
 
-pub fn write_brz(
-    path: PathBuf,
+/// Builds a fully configured single-grid [`World`] from save data. Shared by the
+/// native (write-to-disk) and browser (encode-to-bytes) paths.
+fn world_from_save_data(
+    name: &str,
     data: &SaveData,
     opts: &ConvertOptions,
-    _use_procedural: bool,
     preview_image: Option<Vec<u8>>,
-) -> ConversionResult<()> {
+) -> ConversionResult<World> {
     let mut world = World::new();
 
-    // Set Metadata
     if let Some(img) = preview_image {
         world.meta.screenshot = Some(img);
     }
 
-    // Set Bundle Info from SaveData
-    if let Some(stem) = path.file_stem() {
-        world.meta.bundle.name = stem.to_string_lossy().to_string();
-    }
+    world.meta.bundle.name = name.to_string();
     world.meta.bundle.authors = vec![BundleAuthor {
         id: opts.save_owner_id.clone(),
         name: data.author_name.clone(),
@@ -72,6 +69,46 @@ pub fn write_brz(
     // Copy bricks directly - they're already in brdb format.
     world.bricks = data.bricks.clone();
     configure_world(&mut world, opts)?;
+    Ok(world)
+}
+
+/// Encodes a configured world into BRZ bytes without touching the filesystem.
+fn world_to_brz_bytes(world: &World) -> ConversionResult<Vec<u8>> {
+    fn inner(world: &World) -> Result<Vec<u8>, brdb::BrError> {
+        // Level 6 mirrors the native path: near level-14 size, far faster.
+        Ok(world
+            .to_unsaved()?
+            .to_pending()?
+            .to_brz_data(Some(6))?
+            .to_vec(Some(6))?)
+    }
+
+    inner(world).map_err(|e| ConversionError::SaveWriteError(format!("Failed to encode BRZ: {e}")))
+}
+
+/// Encodes single-grid save data straight to BRZ bytes (browser build).
+pub fn brz_bytes(
+    name: &str,
+    data: &SaveData,
+    opts: &ConvertOptions,
+    preview_image: Option<Vec<u8>>,
+) -> ConversionResult<Vec<u8>> {
+    let world = world_from_save_data(name, data, opts, preview_image)?;
+    world_to_brz_bytes(&world)
+}
+
+pub fn write_brz(
+    path: PathBuf,
+    data: &SaveData,
+    opts: &ConvertOptions,
+    _use_procedural: bool,
+    preview_image: Option<Vec<u8>>,
+) -> ConversionResult<()> {
+    let name = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let world = world_from_save_data(&name, data, opts, preview_image)?;
     write_world(path, world, opts)
 }
 

@@ -4,17 +4,21 @@ use eframe::{egui, egui::*, App};
 #[cfg(not(target_arch = "wasm32"))]
 use eframe::{run_native, NativeOptions};
 use gui::bool_color;
-use obj2brz::{
-    convert, model_bounds, validate_obj_resources, BrickType, ConvertOptions, Logger, Material,
-    ModelBounds, OutputFormat,
-};
+use obj2brz::{BrickType, ConvertOptions, Logger, Material, ModelBounds, OutputFormat};
+#[cfg(not(target_arch = "wasm32"))]
+use obj2brz::{convert, model_bounds, validate_obj_resources};
+#[cfg(target_arch = "wasm32")]
+use obj2brz::{convert_obj_bytes_to_brz, model_bounds_from_bytes};
 #[cfg(not(target_arch = "wasm32"))]
 use rfd::FileDialog;
+#[cfg(not(target_arch = "wasm32"))]
 use rfd::{MessageDialog, MessageLevel};
 use serde::{Deserialize, Serialize};
 #[cfg(not(target_arch = "wasm32"))]
 use std::env;
-use std::{path::Path, path::PathBuf, sync::mpsc, sync::mpsc::Receiver, thread};
+use std::{path::PathBuf, sync::mpsc, sync::mpsc::Receiver};
+#[cfg(not(target_arch = "wasm32"))]
+use std::{path::Path, thread};
 use uuid::Uuid;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -71,6 +75,15 @@ pub struct Obj2Brs {
     conversion_done_receiver: Option<Receiver<()>>,
     #[serde(default = "default_dark_mode")]
     dark_mode: bool,
+
+    // Browser build: the picked OBJ lives in memory (no filesystem path), and
+    // the converted save is handed to a download instead of written to disk.
+    #[cfg(target_arch = "wasm32")]
+    #[serde(skip)]
+    web_obj_bytes: Option<Vec<u8>>,
+    #[cfg(target_arch = "wasm32")]
+    #[serde(skip)]
+    web_file_receiver: Option<Receiver<(String, Vec<u8>)>>,
 }
 
 fn default_dark_mode() -> bool {
@@ -124,6 +137,10 @@ impl Default for Obj2Brs {
             conversion_in_progress: false,
             conversion_done_receiver: None,
             dark_mode: true,
+            #[cfg(target_arch = "wasm32")]
+            web_obj_bytes: None,
+            #[cfg(target_arch = "wasm32")]
+            web_file_receiver: None,
         }
     }
 }
@@ -177,10 +194,21 @@ impl App for Obj2Brs {
 
         gui::configure_style(ctx, self.dark_mode);
         self.receive_file_dialog_messages();
+        #[cfg(not(target_arch = "wasm32"))]
         self.refresh_model_bounds();
 
+        // Native validates real filesystem paths; the browser build has an
+        // in-memory model and no output directory to check.
+        #[cfg(not(target_arch = "wasm32"))]
         let input_file_valid = Path::new(&self.input_file_path).exists();
+        #[cfg(target_arch = "wasm32")]
+        let input_file_valid = self.web_obj_bytes.is_some();
+
+        #[cfg(not(target_arch = "wasm32"))]
         let output_dir_valid = Path::new(&self.output_directory).is_dir();
+        #[cfg(target_arch = "wasm32")]
+        let output_dir_valid = true;
+
         let uuid_valid = Uuid::parse_str(&self.save_owner_id).is_ok();
         let settings_error = self.to_options().settings_error();
         let can_convert = input_file_valid
@@ -189,7 +217,8 @@ impl App for Obj2Brs {
             && settings_error.is_none()
             && !self.conversion_in_progress;
 
-        // Show missing resources dialog if needed
+        // Show missing resources dialog if needed (native filesystem only).
+        #[cfg(not(target_arch = "wasm32"))]
         self.show_missing_resources_dialog(ctx);
 
         gui::header(ctx, &mut self.dark_mode);
@@ -265,9 +294,48 @@ impl Obj2Brs {
                 self.conversion_in_progress = false;
             }
         }
+
+        // Browser build: receive the OBJ bytes picked by the async file dialog,
+        // then measure bounds inline (no worker thread on wasm).
+        #[cfg(target_arch = "wasm32")]
+        if let Some(rx) = &self.web_file_receiver {
+            if let Ok((name, bytes)) = rx.try_recv() {
+                self.web_file_receiver = None;
+                self.input_file_path = name.clone();
+                self.model_bounds_path = name;
+                self.model_bounds = Some(model_bounds_from_bytes(&bytes).map_err(|e| e.to_string()));
+                self.web_obj_bytes = Some(bytes);
+            }
+        }
+    }
+
+    /// Browser build: opens the async file picker and streams the chosen OBJ's
+    /// bytes back through a channel.
+    #[cfg(target_arch = "wasm32")]
+    fn open_web_file_picker(&mut self) {
+        if self.web_file_receiver.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        self.web_file_receiver = Some(rx);
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Some(handle) = rfd::AsyncFileDialog::new()
+                .add_filter("3D Model", &["obj"])
+                .pick_file()
+                .await
+            {
+                let name = handle.file_name();
+                let bytes = handle.read().await;
+                let _ = tx.send((name, bytes));
+            }
+        });
     }
 
     /// Loads bounds away from the UI thread whenever the selected path changes.
+    /// Native only: the browser build measures bounds inline when a file is
+    /// picked (see [`Self::receive_file_dialog_messages`]) since it can't spawn
+    /// threads or read a filesystem path.
+    #[cfg(not(target_arch = "wasm32"))]
     fn refresh_model_bounds(&mut self) {
         if let Some(rx) = &self.model_bounds_receiver {
             if let Ok((path, result)) = rx.try_recv() {
@@ -452,8 +520,9 @@ impl Obj2Brs {
                 });
             }
             #[cfg(target_arch = "wasm32")]
-            ui.add_enabled(false, Button::new("🗁"))
-                .on_hover_text("File pickers are available in the native application.");
+            if gui::file_button(ui) {
+                self.open_web_file_picker();
+            }
         });
 
         ui.add_space(8.0);
@@ -494,6 +563,7 @@ impl Obj2Brs {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn output_card(&mut self, ui: &mut Ui, output_dir_valid: bool) {
         let dir_color = gui::bool_color(ui, output_dir_valid);
         ui.label(RichText::new("Output directory").strong())
@@ -505,7 +575,6 @@ impl Obj2Brs {
                     .desired_width((ui.available_width() - 48.0).max(120.0))
                     .text_color(dir_color),
             );
-            #[cfg(not(target_arch = "wasm32"))]
             if gui::file_button(ui) && self.output_directory_receiver.is_none() {
                 let (tx, rx) = mpsc::channel();
                 self.output_directory_receiver = Some(rx);
@@ -519,39 +588,51 @@ impl Obj2Brs {
                     let _ = tx.send(output_dir);
                 });
             }
-            #[cfg(target_arch = "wasm32")]
-            ui.add_enabled(false, Button::new("🗁"))
-                .on_hover_text("Browser builds do not have a writable output directory.");
         });
 
         ui.add_space(10.0);
+        self.output_form(ui);
+    }
+
+    // Browser build: no output directory or format choice — saves are BRZ and
+    // downloaded straight to the user.
+    #[cfg(target_arch = "wasm32")]
+    fn output_card(&mut self, ui: &mut Ui, _output_dir_valid: bool) {
+        self.output_form(ui);
+    }
+
+    fn output_form(&mut self, ui: &mut Ui) {
         gui::form_grid(ui, "output_grid", |ui| {
             ui.label("Save name")
                 .on_hover_text("Name for the Brickadia save file");
             ui.add(TextEdit::singleline(&mut self.save_name).desired_width(220.0));
             ui.end_row();
 
-            ui.label("Format").on_hover_text(
-                "BRZ is a compact prefab archive. BRDB is an editable Brickadia world directory.",
-            );
-            ComboBox::from_id_salt("output_format")
-                .selected_text(match self.output_format {
-                    OutputFormat::Brz => "BRZ (prefab archive)",
-                    OutputFormat::Brdb => "BRDB (editable world)",
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut self.output_format,
-                        OutputFormat::Brz,
-                        "BRZ (prefab archive)",
-                    );
-                    ui.selectable_value(
-                        &mut self.output_format,
-                        OutputFormat::Brdb,
-                        "BRDB (editable world)",
-                    );
-                });
-            ui.end_row();
+            // Format choice is native only; browser saves are always BRZ.
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                ui.label("Format").on_hover_text(
+                    "BRZ is a compact prefab archive. BRDB is an editable Brickadia world directory.",
+                );
+                ComboBox::from_id_salt("output_format")
+                    .selected_text(match self.output_format {
+                        OutputFormat::Brz => "BRZ (prefab archive)",
+                        OutputFormat::Brdb => "BRDB (editable world)",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.output_format,
+                            OutputFormat::Brz,
+                            "BRZ (prefab archive)",
+                        );
+                        ui.selectable_value(
+                            &mut self.output_format,
+                            OutputFormat::Brdb,
+                            "BRDB (editable world)",
+                        );
+                    });
+                ui.end_row();
+            }
 
             #[cfg(target_os = "windows")]
             {
@@ -697,6 +778,7 @@ impl Obj2Brs {
         ui.end_row();
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn show_missing_resources_dialog(&mut self, ctx: &egui::Context) {
         if let Some(message) = &self.missing_resources_dialog.clone() {
             let mut open = true;
@@ -744,6 +826,7 @@ impl Obj2Brs {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn do_conversion(&mut self) {
         if let Some(error) = self.to_options().settings_error() {
             MessageDialog::new()
@@ -781,6 +864,42 @@ impl Obj2Brs {
         self.continue_conversion(false);
     }
 
+    /// Browser build: converts the in-memory OBJ to BRZ bytes on the UI thread
+    /// (no worker threads on wasm) and hands the result to a download.
+    #[cfg(target_arch = "wasm32")]
+    fn do_conversion(&mut self) {
+        let Some(bytes) = self.web_obj_bytes.clone() else {
+            self.logger.log("No model loaded — pick an OBJ file first.".to_string());
+            return;
+        };
+
+        if let Some(error) = self.to_options().settings_error() {
+            self.logger.log(format!("Error: {error}"));
+            return;
+        }
+
+        self.logger.log("Starting conversion...".to_string());
+        let opts = self.to_options();
+        match convert_obj_bytes_to_brz(&opts, &bytes) {
+            Ok(data) => {
+                let stem = if self.save_name.trim().is_empty() {
+                    "model"
+                } else {
+                    self.save_name.trim()
+                };
+                let filename = format!("{stem}.brz");
+                match download_bytes(&filename, &data) {
+                    Ok(()) => self
+                        .logger
+                        .log(format!("Downloaded {} ({} bytes)", filename, data.len())),
+                    Err(e) => self.logger.log(format!("Download failed: {e}")),
+                }
+            }
+            Err(e) => self.logger.log(format!("Error: {e}")),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn continue_conversion(&mut self, skip_textures: bool) {
         self.conversion_in_progress = true;
         self.logger.log("Starting conversion...".to_string());
@@ -910,14 +1029,54 @@ fn main() {
                 canvas,
                 web_options,
                 Box::new(|cc| {
-                    let app = cc
+                    let mut app = cc
                         .storage
                         .and_then(|storage| eframe::get_value::<Obj2Brs>(storage, eframe::APP_KEY))
                         .unwrap_or_default();
+
+                    // The browser build has no filesystem: start with no model
+                    // selected and force BRZ output (the only downloadable form).
+                    app.input_file_path.clear();
+                    app.output_format = OutputFormat::Brz;
+                    app.web_obj_bytes = None;
+                    app.web_file_receiver = None;
+                    app.model_bounds = None;
+                    app.model_bounds_path = String::new();
+                    app.conversion_in_progress = false;
+
                     Ok(Box::new(app))
                 }),
             )
             .await
             .expect("failed to start eframe web runner");
     });
+}
+
+/// Browser build: triggers a client-side download of `data` as `filename` by
+/// wrapping the bytes in a Blob and clicking a synthetic anchor.
+#[cfg(target_arch = "wasm32")]
+fn download_bytes(filename: &str, data: &[u8]) -> Result<(), String> {
+    use eframe::wasm_bindgen::JsCast as _;
+
+    let array = js_sys::Array::new();
+    array.push(&js_sys::Uint8Array::from(data));
+    let blob = web_sys::Blob::new_with_u8_array_sequence(&array)
+        .map_err(|e| format!("failed to build blob: {e:?}"))?;
+    let url = web_sys::Url::create_object_url_with_blob(&blob)
+        .map_err(|e| format!("failed to create object url: {e:?}"))?;
+
+    let document = web_sys::window()
+        .and_then(|w| w.document())
+        .ok_or("no document")?;
+    let anchor = document
+        .create_element("a")
+        .map_err(|e| format!("failed to create anchor: {e:?}"))?
+        .dyn_into::<web_sys::HtmlAnchorElement>()
+        .map_err(|_| "anchor was not an <a>".to_string())?;
+    anchor.set_href(&url);
+    anchor.set_download(filename);
+    anchor.click();
+
+    web_sys::Url::revoke_object_url(&url).ok();
+    Ok(())
 }

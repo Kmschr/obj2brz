@@ -235,6 +235,21 @@ pub fn validate_obj_resources(obj_path: &str) -> ConversionResult<MissingResourc
 ///
 /// This intentionally does not load textures, keeping size estimates fast and
 /// independent of whether the model's material resources are available.
+fn default_load_options() -> LoadOptions {
+    LoadOptions {
+        triangulate: true,
+        ignore_lines: true,
+        ignore_points: true,
+        single_index: true,
+    }
+}
+
+/// Material loader used when an OBJ is parsed from bytes: the sibling `.mtl`
+/// isn't available in the browser, so no materials are resolved.
+fn no_materials(_: &Path) -> tobj::MTLLoadResult {
+    Ok((Vec::new(), Default::default()))
+}
+
 pub fn model_bounds(obj_path: &str) -> ConversionResult<ModelBounds> {
     let path = Path::new(obj_path);
     if !path.exists() {
@@ -243,15 +258,23 @@ pub fn model_bounds(obj_path: &str) -> ConversionResult<ModelBounds> {
         });
     }
 
-    let load_options = LoadOptions {
-        triangulate: true,
-        ignore_lines: true,
-        ignore_points: true,
-        single_index: true,
-    };
-    let (models, _) = tobj::load_obj(obj_path, &load_options)
+    let (models, _) = tobj::load_obj(obj_path, &default_load_options())
         .map_err(|e| ConversionError::ObjParseError(e.to_string()))?;
 
+    bounds_from_models(&models)
+}
+
+/// Measures triangle bounds from an in-memory OBJ. Used by the browser build,
+/// which has no filesystem path to read.
+pub fn model_bounds_from_bytes(obj_bytes: &[u8]) -> ConversionResult<ModelBounds> {
+    let mut reader = Cursor::new(obj_bytes);
+    let (models, _) = tobj::load_obj_buf(&mut reader, &default_load_options(), no_materials)
+        .map_err(|e| ConversionError::ObjParseError(e.to_string()))?;
+
+    bounds_from_models(&models)
+}
+
+fn bounds_from_models(models: &[tobj::Model]) -> ConversionResult<ModelBounds> {
     let mut min = [f32::INFINITY; 3];
     let mut max = [f32::NEG_INFINITY; 3];
     let mut has_triangle = false;
@@ -291,6 +314,31 @@ pub fn model_bounds(obj_path: &str) -> ConversionResult<ModelBounds> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Unit cube as an OBJ, enough volume for the voxelizer to produce bricks.
+    const CUBE_OBJ: &str = "\
+v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nv 0 0 1\nv 1 0 1\nv 1 1 1\nv 0 1 1\n\
+f 1 2 3\nf 1 3 4\nf 5 6 7\nf 5 7 8\nf 1 2 6\nf 1 6 5\n\
+f 2 3 7\nf 2 7 6\nf 3 4 8\nf 3 8 7\nf 4 1 5\nf 4 5 8\n";
+
+    #[test]
+    fn converts_in_memory_obj_to_brz_bytes() {
+        let opts = ConvertOptions {
+            scale: 8.0,
+            ..ConvertOptions::default()
+        };
+
+        let bytes = convert_obj_bytes_to_brz(&opts, CUBE_OBJ.as_bytes()).unwrap();
+
+        assert!(bytes.starts_with(b"BRZ"), "output is not a BRZ archive");
+    }
+
+    #[test]
+    fn measures_bounds_from_bytes() {
+        let bounds = model_bounds_from_bytes(CUBE_OBJ.as_bytes()).unwrap();
+        assert_eq!(bounds.min, [0.0, 0.0, 0.0]);
+        assert_eq!(bounds.max, [1.0, 1.0, 1.0]);
+    }
 
     #[test]
     fn measures_only_triangle_geometry() {
@@ -560,7 +608,55 @@ fn generate_octree(opt: &ConvertOptions, skip_textures: bool, material_filter: O
     Ok(voxelize_models(&mut models, &material_images, opt, material_filter))
 }
 
-fn write_brz_data(octree: &mut octree::VoxelTree<Vector4<u8>>, opts: &ConvertOptions, material_id: Option<usize>) -> ConversionResult<()> {
+/// Loads OBJ geometry straight from bytes for the browser build. Without the
+/// sibling `.mtl`/textures every face falls back to a default white material.
+fn load_models_from_buf(
+    obj_bytes: &[u8],
+    opt: &ConvertOptions,
+) -> ConversionResult<(Vec<tobj::Model>, Vec<image::RgbaImage>)> {
+    let mut reader = Cursor::new(obj_bytes);
+    let (mut models, _materials) =
+        tobj::load_obj_buf(&mut reader, &default_load_options(), no_materials)
+            .map_err(|e| ConversionError::ObjParseError(e.to_string()))?;
+
+    if !models
+        .iter()
+        .any(|model| model.mesh.indices.len() >= 3 && model.mesh.positions.len() >= 3)
+    {
+        return Err(ConversionError::ObjParseError(
+            "OBJ contains no triangle geometry to voxelize".to_string(),
+        ));
+    }
+
+    let material_images = vec![create_solid_color_texture([1.0, 1.0, 1.0], 1.0)];
+    scale_models(
+        &mut models,
+        opt.scale,
+        if opt.rampify { BrickType::Default } else { opt.bricktype },
+    );
+
+    Ok((models, material_images))
+}
+
+/// Converts an in-memory OBJ into BRZ bytes. This is the browser entry point:
+/// input arrives as bytes (no filesystem) and the encoded save is returned for
+/// the caller to hand to a download.
+pub fn convert_obj_bytes_to_brz(opts: &ConvertOptions, obj_bytes: &[u8]) -> ConversionResult<Vec<u8>> {
+    opts.logger.log("Importing model...".to_string());
+    let (mut models, material_images) = load_models_from_buf(obj_bytes, opts)?;
+    let mut octree = voxelize_models(&mut models, &material_images, opts, None);
+    let save_data = octree_to_save_data(&mut octree, opts, None)?;
+    opts.logger.log(format!("Writing {} bricks...", save_data.bricks.len()));
+    let preview = obj_preview_jpg()?;
+    brdb_support::brz_bytes(&opts.save_name, &save_data, opts, Some(preview))
+}
+
+/// Runs the simplify/rampify pass, turning a voxel octree into brick save data.
+fn octree_to_save_data(
+    octree: &mut octree::VoxelTree<Vector4<u8>>,
+    opts: &ConvertOptions,
+    material_id: Option<usize>,
+) -> ConversionResult<SaveData> {
     let max_merge = 500;
 
     let mut save_data = SaveData {
@@ -582,18 +678,29 @@ fn write_brz_data(octree: &mut octree::VoxelTree<Vector4<u8>>, opts: &ConvertOpt
         simplify_lossless(octree, &mut save_data, opts, max_merge);
     }
 
-    // Write file
-    opts.logger.log(format!("Writing {} bricks...", save_data.bricks.len()));
+    Ok(save_data)
+}
 
+/// Renders the bundled obj2brz icon to a JPEG for use as the save preview.
+fn obj_preview_jpg() -> ConversionResult<Vec<u8>> {
     let preview = image::load_from_memory_with_format(OBJ_ICON, image::ImageFormat::Png)
         .map_err(|e| ConversionError::SaveWriteError(format!("Failed to load preview icon: {}", e)))?;
 
-    // Convert preview to Jpeg for BRZ
     let mut preview_bytes_jpg = Vec::new();
     preview
         .write_to(&mut Cursor::new(&mut preview_bytes_jpg), image::ImageOutputFormat::Jpeg(85))
         .map_err(|e| ConversionError::SaveWriteError(format!("Failed to encode JPEG preview: {}", e)))?;
 
+    Ok(preview_bytes_jpg)
+}
+
+fn write_brz_data(octree: &mut octree::VoxelTree<Vector4<u8>>, opts: &ConvertOptions, material_id: Option<usize>) -> ConversionResult<()> {
+    let save_data = octree_to_save_data(octree, opts, material_id)?;
+
+    // Write file
+    opts.logger.log(format!("Writing {} bricks...", save_data.bricks.len()));
+
+    let preview = obj_preview_jpg()?;
     let output_file_path = output_file_path(opts);
 
     // Determine if we should use procedural bricks based on brick type
@@ -604,7 +711,7 @@ fn write_brz_data(octree: &mut octree::VoxelTree<Vector4<u8>>, opts: &ConvertOpt
         &save_data,
         opts,
         use_procedural,
-        Some(preview_bytes_jpg),
+        Some(preview),
     )?;
 
     opts.logger.log(format!("Save written to: {:?}", output_file_path));
@@ -614,22 +721,14 @@ fn write_brz_data(octree: &mut octree::VoxelTree<Vector4<u8>>, opts: &ConvertOpt
 fn write_brz_with_grids(opts: &ConvertOptions, grids: Vec<(Entity, Vec<Brick>)>) -> ConversionResult<()> {
     opts.logger.log(format!("Writing {} frozen grids...", grids.len()));
 
-    let preview = image::load_from_memory_with_format(OBJ_ICON, image::ImageFormat::Png)
-        .map_err(|e| ConversionError::SaveWriteError(format!("Failed to load preview icon: {}", e)))?;
-
-    // Convert preview to Jpeg for BRZ
-    let mut preview_bytes_jpg = Vec::new();
-    preview
-        .write_to(&mut Cursor::new(&mut preview_bytes_jpg), image::ImageOutputFormat::Jpeg(85))
-        .map_err(|e| ConversionError::SaveWriteError(format!("Failed to encode JPEG preview: {}", e)))?;
-
+    let preview = obj_preview_jpg()?;
     let output_file_path = output_file_path(opts);
 
     brdb_support::write_brz_grids(
         output_file_path.clone(),
         grids,
         opts,
-        Some(preview_bytes_jpg),
+        Some(preview),
     )?;
 
     opts.logger.log(format!("Save written to: {:?}", output_file_path));

@@ -8,7 +8,6 @@ use egui::{
 /// Brand accent (Brickadia blue).
 pub const ACCENT: Color32 = Color32::from_rgb(55, 132, 255);
 const ERROR_COLOR: Color32 = Color32::from_rgb(224, 86, 86);
-#[cfg(not(target_arch = "wasm32"))]
 const FOLDER_COLOR: Color32 = Color32::from_rgb(255, 206, 70);
 
 /// Applies the application palette, spacing and typography. Idempotent: safe
@@ -290,7 +289,6 @@ pub fn primary_button(ui: &mut Ui, text: &str, enabled: bool) -> bool {
         .clicked()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub fn file_button(ui: &mut Ui) -> bool {
     ui.button(RichText::new("🗁").color(FOLDER_COLOR))
         .on_hover_text("Browse…")
