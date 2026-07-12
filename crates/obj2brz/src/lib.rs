@@ -15,7 +15,8 @@ mod simplify;
 mod voxelize;
 
 pub use convert::{
-    convert, output_file_path, BrickType, ConvertOptions, Material, OutputFormat, SaveData,
+    convert, model_bounds, output_file_path, BrickType, ConvertOptions, Material, ModelBounds,
+    OutputFormat, SaveData,
 };
 pub use error::{ConversionError, ConversionResult, MissingResources};
 pub use logger::Logger;

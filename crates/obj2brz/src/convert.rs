@@ -98,6 +98,39 @@ pub enum OutputFormat {
     Brdb,
 }
 
+/// Axis-aligned bounds of the triangle geometry contained in an OBJ file.
+///
+/// Coordinates are in the OBJ's own units. Front-ends can combine these
+/// dimensions with their selected conversion settings to present an estimated
+/// in-game size without voxelizing the entire model first.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ModelBounds {
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+}
+
+impl ModelBounds {
+    pub fn dimensions(self) -> [f32; 3] {
+        [
+            self.max[0] - self.min[0],
+            self.max[1] - self.min[1],
+            self.max[2] - self.min[2],
+        ]
+    }
+
+    /// Estimates the generated save's width, depth, and height in studs.
+    pub fn estimated_stud_dimensions(self, options: &ConvertOptions) -> [f32; 3] {
+        let stud_scale = options.scale
+            * if !options.rampify && options.bricktype == BrickType::Microbricks {
+                options.brick_scale as f32 / 5.0
+            } else {
+                1.0
+            };
+        let [width, height, depth] = self.dimensions();
+        [width * stud_scale, depth * stud_scale, height * stud_scale]
+    }
+}
+
 impl ConvertOptions {
     /// Validates settings that are cheap to check without touching the filesystem.
     pub fn settings_error(&self) -> Option<String> {
@@ -180,6 +213,105 @@ pub fn validate_obj_resources(obj_path: &str) -> ConversionResult<MissingResourc
     }
 
     Ok(missing)
+}
+
+/// Reads an OBJ's triangle geometry and returns its axis-aligned bounds.
+///
+/// This intentionally does not load textures, keeping size estimates fast and
+/// independent of whether the model's material resources are available.
+pub fn model_bounds(obj_path: &str) -> ConversionResult<ModelBounds> {
+    let path = Path::new(obj_path);
+    if !path.exists() {
+        return Err(ConversionError::ObjFileNotFound {
+            path: path.to_path_buf(),
+        });
+    }
+
+    let load_options = LoadOptions {
+        triangulate: true,
+        ignore_lines: true,
+        ignore_points: true,
+        single_index: true,
+    };
+    let (models, _) = tobj::load_obj(obj_path, &load_options)
+        .map_err(|e| ConversionError::ObjParseError(e.to_string()))?;
+
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    let mut has_triangle = false;
+
+    for model in models {
+        let mesh = &model.mesh;
+        for indices in mesh.indices.chunks_exact(3) {
+            let vertex = |index: u32| {
+                let offset = index as usize * 3;
+                mesh.positions.get(offset..offset + 3)
+            };
+            let (Some(a), Some(b), Some(c)) =
+                (vertex(indices[0]), vertex(indices[1]), vertex(indices[2]))
+            else {
+                continue;
+            };
+
+            has_triangle = true;
+            for position in [a, b, c] {
+                for axis in 0..3 {
+                    min[axis] = min[axis].min(position[axis]);
+                    max[axis] = max[axis].max(position[axis]);
+                }
+            }
+        }
+    }
+
+    if !has_triangle {
+        return Err(ConversionError::ObjParseError(
+            "OBJ contains no triangle geometry to measure".to_string(),
+        ));
+    }
+
+    Ok(ModelBounds { min, max })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn measures_only_triangle_geometry() {
+        let path = std::env::temp_dir().join(format!(
+            "obj2brz-bounds-{}-{}.obj",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::write(
+            &path,
+            "v -2 4 10\nv 3 9 -1\nv 1 6 5\nv 999 999 999\nf 1 2 3\n",
+        )
+        .unwrap();
+
+        let bounds = model_bounds(path.to_str().unwrap()).unwrap();
+        assert_eq!(bounds.min, [-2.0, 4.0, -1.0]);
+        assert_eq!(bounds.max, [3.0, 9.0, 10.0]);
+        assert_eq!(bounds.dimensions(), [5.0, 5.0, 11.0]);
+
+        let default_options = ConvertOptions {
+            bricktype: BrickType::Default,
+            scale: 2.0,
+            ..ConvertOptions::default()
+        };
+        assert_eq!(bounds.estimated_stud_dimensions(&default_options), [10.0, 22.0, 10.0]);
+
+        let micro_options = ConvertOptions {
+            brick_scale: 2,
+            ..ConvertOptions::default()
+        };
+        assert_eq!(bounds.estimated_stud_dimensions(&micro_options), [2.0, 4.4, 2.0]);
+
+        std::fs::remove_file(path).unwrap();
+    }
 }
 
 /// Runs a full conversion described by `opts`, writing the resulting save to disk.
@@ -344,7 +476,11 @@ fn load_models_and_materials(
     }
 
     // Scale models
-    scale_models(&mut models, opt.scale, if opt.rampify { BrickType::Default } else { opt.bricktype });
+    scale_models(
+        &mut models,
+        opt.scale,
+        if opt.rampify { BrickType::Default } else { opt.bricktype },
+    );
 
     Ok((models, material_images))
 }

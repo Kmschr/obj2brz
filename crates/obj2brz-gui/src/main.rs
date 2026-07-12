@@ -7,7 +7,8 @@ use eframe::{egui, egui::*, App};
 use eframe::{run_native, NativeOptions};
 use gui::bool_color;
 use obj2brz::{
-    convert, validate_obj_resources, BrickType, ConvertOptions, Logger, Material, OutputFormat,
+    convert, model_bounds, validate_obj_resources, BrickType, ConvertOptions, Logger, Material,
+    ModelBounds, OutputFormat,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use rfd::FileDialog;
@@ -32,6 +33,12 @@ pub struct Obj2Brs {
     #[serde(skip)]
     input_file_path_receiver: Option<Receiver<Option<PathBuf>>>,
     input_file_path: String,
+    #[serde(skip)]
+    model_bounds_receiver: Option<Receiver<(String, Result<ModelBounds, String>)>>,
+    #[serde(skip)]
+    model_bounds_path: String,
+    #[serde(skip)]
+    model_bounds: Option<Result<ModelBounds, String>>,
     material: Material,
     material_intensity: u32,
     #[serde(skip)]
@@ -68,6 +75,11 @@ fn default_dark_mode() -> bool {
     true
 }
 
+fn format_studs(value: f32) -> String {
+    let formatted = format!("{value:.1}");
+    formatted.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
 impl Default for Obj2Brs {
     fn default() -> Self {
         Self {
@@ -75,6 +87,9 @@ impl Default for Obj2Brs {
             brick_scale: 1,
             input_file_path_receiver: None,
             input_file_path: "test.obj".into(),
+            model_bounds_receiver: None,
+            model_bounds_path: String::new(),
+            model_bounds: None,
             material: Material::Plastic,
             material_intensity: 5,
             output_directory_receiver: None,
@@ -139,6 +154,7 @@ impl App for Obj2Brs {
 
         gui::configure_style(ctx, self.dark_mode);
         self.receive_file_dialog_messages();
+        self.refresh_model_bounds();
 
         let input_file_valid = Path::new(&self.input_file_path).exists();
         let output_dir_valid = Path::new(&self.output_directory).is_dir();
@@ -223,6 +239,31 @@ impl Obj2Brs {
                 self.conversion_done_receiver = None;
                 self.conversion_in_progress = false;
             }
+        }
+    }
+
+    /// Loads bounds away from the UI thread whenever the selected path changes.
+    fn refresh_model_bounds(&mut self) {
+        if let Some(rx) = &self.model_bounds_receiver {
+            if let Ok((path, result)) = rx.try_recv() {
+                self.model_bounds_receiver = None;
+                if path == self.input_file_path {
+                    self.model_bounds_path = path;
+                    self.model_bounds = Some(result);
+                }
+            }
+        }
+
+        if self.model_bounds_receiver.is_none() && self.model_bounds_path != self.input_file_path {
+            let path = self.input_file_path.clone();
+            self.model_bounds_path = path.clone();
+            self.model_bounds = None;
+            let (tx, rx) = mpsc::channel();
+            self.model_bounds_receiver = Some(rx);
+            thread::spawn(move || {
+                let result = model_bounds(&path).map_err(|error| error.to_string());
+                let _ = tx.send((path, result));
+            });
         }
     }
 
@@ -384,6 +425,43 @@ impl Obj2Brs {
             ui.add_enabled(false, Button::new("🗁"))
                 .on_hover_text("File pickers are available in the native application.");
         });
+
+        ui.add_space(8.0);
+        self.model_size_estimate(ui);
+    }
+
+    fn model_size_estimate(&self, ui: &mut Ui) {
+        match self.model_bounds.as_ref() {
+            Some(Ok(bounds)) => {
+                let [width, depth, height] = bounds.estimated_stud_dimensions(&self.to_options());
+
+                ui.label(RichText::new(format!(
+                    "Estimated in-game bounds: ≈ {} studs wide × {} studs deep × {} studs tall",
+                    format_studs(width),
+                    format_studs(depth),
+                    format_studs(height),
+                ))
+                .strong())
+                .on_hover_text(
+                    "Based on the OBJ's triangle bounds and your current Scale, Brick Type, and Brick Scale. Voxelization can round the outer edge by up to one voxel.",
+                );
+            }
+            Some(Err(error)) => {
+                ui.label(
+                    RichText::new(format!("Unable to estimate model size: {error}"))
+                        .small()
+                        .color(egui::Color32::from_rgb(255, 170, 90)),
+                );
+            }
+            None if self.model_bounds_receiver.is_some() => {
+                ui.label(
+                    RichText::new("Measuring model bounds…")
+                        .small()
+                        .color(ui.visuals().weak_text_color()),
+                );
+            }
+            None => {}
+        }
     }
 
     fn output_card(&mut self, ui: &mut Ui, output_dir_valid: bool) {
@@ -554,7 +632,7 @@ impl Obj2Brs {
             ui.end_row();
         }
 
-        if self.bricktype == BrickType::Microbricks {
+        if !self.rampify && self.bricktype == BrickType::Microbricks {
             ui.label("Brick Scale")
                 .on_hover_text("Use this to make microbricks bigger for a more pixelated look");
             ui.add(
@@ -762,6 +840,9 @@ fn main() {
             app.logger = logger.clone();
             app.conversion_in_progress = false;
             app.input_file_path_receiver = None;
+            app.model_bounds_receiver = None;
+            app.model_bounds_path = String::new();
+            app.model_bounds = None;
             app.output_directory_receiver = None;
             app.conversion_done_receiver = None;
             app.missing_resources_dialog = None;
