@@ -6,13 +6,13 @@ use egui::{
 };
 
 /// Brand accent (Brickadia blue).
-pub const ACCENT: Color32 = Color32::from_rgb(45, 120, 255);
-const ERROR_COLOR: Color32 = Color32::from_rgb(255, 120, 120);
+pub const ACCENT: Color32 = Color32::from_rgb(55, 132, 255);
+const ERROR_COLOR: Color32 = Color32::from_rgb(224, 86, 86);
 #[cfg(not(target_arch = "wasm32"))]
 const FOLDER_COLOR: Color32 = Color32::from_rgb(255, 206, 70);
 
-/// Applies spacing, rounding, font sizes and the accent color on top of the
-/// selected light/dark base theme. Idempotent: safe to call every frame.
+/// Applies the application palette, spacing and typography. Idempotent: safe
+/// to call every frame after the user changes themes.
 pub fn configure_style(ctx: &Context, dark: bool) {
     let mut style = (*ctx.style()).clone();
 
@@ -21,7 +21,70 @@ pub fn configure_style(ctx: &Context, dark: bool) {
     } else {
         egui::Visuals::light()
     };
-    visuals.selection.bg_fill = ACCENT.linear_multiply(0.6);
+    if dark {
+        visuals.panel_fill = Color32::from_rgb(30, 41, 56);
+        visuals.window_fill = Color32::from_rgb(37, 50, 68);
+        visuals.faint_bg_color = Color32::from_rgb(38, 52, 71);
+        visuals.extreme_bg_color = Color32::from_rgb(24, 33, 46);
+        visuals.text_edit_bg_color = Some(Color32::from_rgb(27, 38, 53));
+        visuals.code_bg_color = Color32::from_rgb(31, 43, 59);
+        visuals.override_text_color = Some(Color32::from_rgb(241, 245, 249));
+        visuals.weak_text_color = Some(Color32::from_rgb(171, 184, 204));
+        visuals.window_stroke = Stroke::new(1.0, Color32::from_rgb(69, 86, 109));
+
+        visuals.widgets.noninteractive.bg_fill = visuals.panel_fill;
+        visuals.widgets.noninteractive.weak_bg_fill = visuals.faint_bg_color;
+        visuals.widgets.noninteractive.bg_stroke =
+            Stroke::new(1.0, Color32::from_rgb(69, 86, 109));
+        visuals.widgets.noninteractive.fg_stroke =
+            Stroke::new(1.0, Color32::from_rgb(241, 245, 249));
+        visuals.widgets.inactive.bg_fill = Color32::from_rgb(43, 58, 78);
+        visuals.widgets.inactive.weak_bg_fill = Color32::from_rgb(43, 58, 78);
+        visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, Color32::from_rgb(82, 103, 130));
+        visuals.widgets.inactive.fg_stroke =
+            Stroke::new(1.0, Color32::from_rgb(233, 239, 248));
+        visuals.widgets.hovered.bg_fill = Color32::from_rgb(49, 69, 95);
+        visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(49, 69, 95);
+        visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, Color32::from_rgb(119, 169, 255));
+        visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, Color32::WHITE);
+        visuals.widgets.active.bg_fill = ACCENT;
+        visuals.widgets.active.weak_bg_fill = ACCENT;
+        visuals.widgets.active.bg_stroke = Stroke::new(1.0, Color32::from_rgb(158, 196, 255));
+        visuals.widgets.active.fg_stroke = Stroke::new(1.0, Color32::WHITE);
+    } else {
+        visuals.panel_fill = Color32::from_rgb(244, 247, 251);
+        visuals.window_fill = Color32::WHITE;
+        visuals.faint_bg_color = Color32::WHITE;
+        visuals.extreme_bg_color = Color32::from_rgb(233, 239, 247);
+        visuals.text_edit_bg_color = Some(Color32::from_rgb(249, 251, 254));
+        visuals.code_bg_color = Color32::from_rgb(238, 243, 249);
+        visuals.override_text_color = Some(Color32::from_rgb(24, 34, 52));
+        visuals.weak_text_color = Some(Color32::from_rgb(91, 107, 132));
+        visuals.window_stroke = Stroke::new(1.0, Color32::from_rgb(205, 216, 230));
+
+        visuals.widgets.noninteractive.bg_fill = visuals.panel_fill;
+        visuals.widgets.noninteractive.weak_bg_fill = visuals.faint_bg_color;
+        visuals.widgets.noninteractive.bg_stroke =
+            Stroke::new(1.0, Color32::from_rgb(205, 216, 230));
+        visuals.widgets.noninteractive.fg_stroke =
+            Stroke::new(1.0, Color32::from_rgb(24, 34, 52));
+        visuals.widgets.inactive.bg_fill = Color32::from_rgb(232, 238, 246);
+        visuals.widgets.inactive.weak_bg_fill = Color32::from_rgb(239, 244, 250);
+        visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, Color32::from_rgb(198, 211, 228));
+        visuals.widgets.inactive.fg_stroke =
+            Stroke::new(1.0, Color32::from_rgb(35, 48, 70));
+        visuals.widgets.hovered.bg_fill = Color32::from_rgb(222, 234, 255);
+        visuals.widgets.hovered.weak_bg_fill = Color32::from_rgb(222, 234, 255);
+        visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, ACCENT);
+        visuals.widgets.hovered.fg_stroke =
+            Stroke::new(1.0, Color32::from_rgb(18, 48, 102));
+        visuals.widgets.active.bg_fill = ACCENT;
+        visuals.widgets.active.weak_bg_fill = ACCENT;
+        visuals.widgets.active.bg_stroke = Stroke::new(1.0, Color32::from_rgb(21, 89, 199));
+        visuals.widgets.active.fg_stroke = Stroke::new(1.0, Color32::WHITE);
+    }
+
+    visuals.selection.bg_fill = ACCENT.linear_multiply(0.72);
     visuals.selection.stroke = Stroke::new(1.0, ACCENT);
     visuals.hyperlink_color = ACCENT;
 
@@ -34,7 +97,7 @@ pub fn configure_style(ctx: &Context, dark: bool) {
     visuals.widgets.open.corner_radius = radius;
     style.visuals = visuals;
 
-    style.spacing.item_spacing = Vec2::new(10.0, 10.0);
+    style.spacing.item_spacing = Vec2::new(10.0, 11.0);
     style.spacing.button_padding = Vec2::new(12.0, 7.0);
     style.spacing.interact_size.y = 26.0;
     style.spacing.icon_width = 20.0;
@@ -63,19 +126,19 @@ pub fn configure_style(ctx: &Context, dark: bool) {
     ctx.set_style(style);
 }
 
-/// Top application bar: brand, tagline, theme toggle and repo link.
+/// Top application bar: title, theme toggle and repository link.
 pub fn header(ctx: &Context, dark_mode: &mut bool) {
     TopBottomPanel::top("header")
-        .exact_height(56.0)
-        .frame(Frame::default().inner_margin(Margin::symmetric(16, 8)))
+        .exact_height(40.0)
+        .frame(
+            Frame::default()
+                .fill(ctx.style().visuals.panel_fill)
+                .stroke(ctx.style().visuals.window_stroke)
+                .inner_margin(Margin::symmetric(16, 4)),
+        )
         .show(ctx, |ui| {
-            ui.horizontal_centered(|ui| {
+            ui.horizontal(|ui| {
                 ui.label(RichText::new("obj2brz").heading().strong());
-                ui.add_space(10.0);
-                ui.label(
-                    RichText::new("model to Brickadia save").color(ui.visuals().weak_text_color()),
-                );
-
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let icon = if *dark_mode { "☀" } else { "🌙" };
                     if ui
@@ -100,7 +163,12 @@ pub fn tools_sidebar(ctx: &Context) {
         .resizable(true)
         .default_width(230.0)
         .width_range(190.0..=320.0)
-        .frame(Frame::default().inner_margin(Margin::same(14)))
+        .frame(
+            Frame::default()
+                .fill(ctx.style().visuals.panel_fill)
+                .stroke(ctx.style().visuals.window_stroke)
+                .inner_margin(Margin::same(14)),
+        )
         .show(ctx, |ui| {
             ui.label(
                 RichText::new("BRICKADIA TOOLS")
@@ -151,7 +219,7 @@ pub fn tools_sidebar(ctx: &Context) {
 
 fn tool_link(ui: &mut Ui, label: &str, url: &str, description: &str) {
     ui.add(Hyperlink::from_label_and_url(
-        RichText::new(label).strong(),
+        RichText::new(label).strong().color(ACCENT),
         url,
     ));
     ui.label(

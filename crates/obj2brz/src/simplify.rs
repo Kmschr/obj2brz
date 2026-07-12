@@ -297,7 +297,11 @@ fn create_brick(
         position,
         rotation: Rotation::Deg0,
         direction: Direction::ZPositive,
-        collision: Default::default(),
+        collision: brdb::Collision {
+            player: opts.player_collision,
+            physics: opts.physics_collision,
+            ..Default::default()
+        },
         visible: true,
         color,
         material: match opts.material {

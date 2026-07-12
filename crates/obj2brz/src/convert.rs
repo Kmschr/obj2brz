@@ -31,6 +31,12 @@ pub struct ConvertOptions {
     pub input_file_path: String,
     pub material: Material,
     pub material_intensity: u32,
+    /// Whether generated bricks block Brickadia players.
+    #[serde(default = "default_player_collision")]
+    pub player_collision: bool,
+    /// Whether generated bricks participate in physics and grid collisions.
+    #[serde(default = "default_physics_collision")]
+    pub physics_collision: bool,
     pub output_directory: String,
     pub copy_to_clipboard: bool,
     pub output_format: OutputFormat,
@@ -57,6 +63,8 @@ impl Default for ConvertOptions {
             input_file_path: "test.obj".into(),
             material: Material::Plastic,
             material_intensity: 5,
+            player_collision: true,
+            physics_collision: true,
             output_directory: "builds".into(),
             copy_to_clipboard: false,
             output_format: OutputFormat::Brz,
@@ -73,6 +81,14 @@ impl Default for ConvertOptions {
             logger: Logger::new(),
         }
     }
+}
+
+const fn default_player_collision() -> bool {
+    true
+}
+
+const fn default_physics_collision() -> bool {
+    true
 }
 
 #[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]

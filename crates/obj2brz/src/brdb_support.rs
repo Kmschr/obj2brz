@@ -127,6 +127,8 @@ fn configure_world(world: &mut World, opts: &ConvertOptions) -> ConversionResult
         brick.owner_index = Some(1);
         brick.original_owner_index = Some(1);
         brick.material_intensity = opts.material_intensity as u8;
+        brick.collision.player = opts.player_collision;
+        brick.collision.physics = opts.physics_collision;
     }
     for (entity, bricks) in &mut world.grids {
         entity.owner_index = Some(1);
@@ -135,6 +137,8 @@ fn configure_world(world: &mut World, opts: &ConvertOptions) -> ConversionResult
             brick.owner_index = Some(1);
             brick.original_owner_index = Some(1);
             brick.material_intensity = opts.material_intensity as u8;
+            brick.collision.player = opts.player_collision;
+            brick.collision.physics = opts.physics_collision;
         }
     }
 
@@ -186,5 +190,21 @@ mod tests {
         let bytes = std::fs::read(&path).unwrap();
         assert!(bytes.starts_with(b"BRZ"));
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn applies_requested_collision_settings_to_every_brick() {
+        let mut world = World::new();
+        world.bricks.push(Brick::default());
+        let opts = ConvertOptions {
+            player_collision: false,
+            physics_collision: false,
+            ..ConvertOptions::default()
+        };
+
+        configure_world(&mut world, &opts).unwrap();
+
+        assert!(!world.bricks[0].collision.player);
+        assert!(!world.bricks[0].collision.physics);
     }
 }

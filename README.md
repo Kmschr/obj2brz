@@ -45,6 +45,7 @@ writable filesystem path.
 
 ```sh
 obj2brz model.obj -o builds -n my_save --scale 2 --simplify
+obj2brz model.obj --material hologram --no-player-collision
 obj2brz --help
 ```
 
@@ -52,6 +53,11 @@ Use `--rampify` to generate a slope-focused save with default ramps and
 wedges. Rampify runs directly from the converter's voxel octree, rather than
 building an intermediate save containing one 1×1 plate per voxel, and works
 for both BRZ and BRDB output.
+
+Use `--material` to apply a Brickadia material such as `plastic`, `glass`,
+`glow`, `metallic`, `hologram`, or `ghost` to the whole export. Use
+`--no-player-collision` and/or `--no-physics-collision` for decorative models
+that should not block players or participate in physics/grid collisions.
 
 ## Library usage
 

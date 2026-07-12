@@ -1,6 +1,4 @@
 mod gui;
-#[cfg(not(target_arch = "wasm32"))]
-mod icon;
 
 use eframe::{egui, egui::*, App};
 #[cfg(not(target_arch = "wasm32"))]
@@ -41,6 +39,10 @@ pub struct Obj2Brs {
     model_bounds: Option<Result<ModelBounds, String>>,
     material: Material,
     material_intensity: u32,
+    #[serde(default = "default_player_collision")]
+    player_collision: bool,
+    #[serde(default = "default_physics_collision")]
+    physics_collision: bool,
     #[serde(skip)]
     output_directory_receiver: Option<Receiver<Option<PathBuf>>>,
     output_directory: String,
@@ -75,6 +77,14 @@ fn default_dark_mode() -> bool {
     true
 }
 
+fn default_player_collision() -> bool {
+    true
+}
+
+fn default_physics_collision() -> bool {
+    true
+}
+
 fn format_studs(value: f32) -> String {
     let formatted = format!("{value:.1}");
     formatted.trim_end_matches('0').trim_end_matches('.').to_string()
@@ -92,6 +102,8 @@ impl Default for Obj2Brs {
             model_bounds: None,
             material: Material::Plastic,
             material_intensity: 5,
+            player_collision: true,
+            physics_collision: true,
             output_directory_receiver: None,
             output_directory: "builds".into(),
             copy_to_clipboard: false,
@@ -125,6 +137,8 @@ impl Obj2Brs {
             input_file_path: self.input_file_path.clone(),
             material: self.material,
             material_intensity: self.material_intensity,
+            player_collision: self.player_collision,
+            physics_collision: self.physics_collision,
             output_directory: self.output_directory.clone(),
             copy_to_clipboard: self.copy_to_clipboard,
             output_format: self.output_format,
@@ -146,6 +160,15 @@ impl Obj2Brs {
 impl App for Obj2Brs {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, eframe::APP_KEY, self);
+    }
+
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        let background = if self.dark_mode {
+            Color32::from_rgb(30, 41, 56)
+        } else {
+            Color32::from_rgb(244, 247, 251)
+        };
+        background.to_normalized_gamma_f32()
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -180,32 +203,34 @@ impl App for Obj2Brs {
             settings_error.as_deref(),
         );
 
-        CentralPanel::default().show(ctx, |ui: &mut Ui| {
-            ScrollArea::vertical().show(ui, |ui| {
-                ui.add_space(4.0);
-                gui::card(ui, "SOURCE MODEL", |ui| {
-                    self.source_card(ui, input_file_valid);
-                });
-                gui::card(ui, "OUTPUT", |ui| {
-                    self.output_card(ui, output_dir_valid);
-                });
-                gui::card(ui, "BRICKS", |ui| {
-                    self.bricks_card(ui);
-                });
-
-                egui::CollapsingHeader::new(RichText::new("Advanced options").strong())
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        ui.add_space(4.0);
-                        gui::form_grid(ui, "advanced_grid", |ui| {
-                            self.advanced_options(ui, uuid_valid);
-                        });
-                        ui.add_space(8.0);
-                        gui::info_text(ui);
+        CentralPanel::default()
+            .frame(Frame::default().fill(ctx.style().visuals.panel_fill))
+            .show(ctx, |ui: &mut Ui| {
+                ScrollArea::vertical().show(ui, |ui| {
+                    ui.add_space(4.0);
+                    gui::card(ui, "SOURCE MODEL", |ui| {
+                        self.source_card(ui, input_file_valid);
                     });
-                ui.add_space(8.0);
+                    gui::card(ui, "OUTPUT", |ui| {
+                        self.output_card(ui, output_dir_valid);
+                    });
+                    gui::card(ui, "BRICKS", |ui| {
+                        self.bricks_card(ui);
+                    });
+
+                    egui::CollapsingHeader::new(RichText::new("Advanced options").strong())
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            ui.add_space(4.0);
+                            gui::form_grid(ui, "advanced_grid", |ui| {
+                                self.advanced_options(ui, uuid_valid);
+                            });
+                            ui.add_space(8.0);
+                            gui::info_text(ui);
+                        });
+                    ui.add_space(8.0);
+                });
             });
-        });
     }
 }
 
@@ -281,7 +306,12 @@ impl Obj2Brs {
             .resizable(true)
             .default_height(300.0)
             .height_range(200.0..=500.0)
-            .frame(Frame::default().inner_margin(egui::Margin::symmetric(16, 10)))
+            .frame(
+                Frame::default()
+                    .fill(ctx.style().visuals.panel_fill)
+                    .stroke(ctx.style().visuals.window_stroke)
+                    .inner_margin(egui::Margin::symmetric(16, 10)),
+            )
             .show(ctx, |ui| {
                 self.action_bar_contents(
                     ui,
@@ -563,6 +593,15 @@ impl Obj2Brs {
                 });
             ui.end_row();
 
+            ui.label("Collision").on_hover_text(
+                "Choose which things the exported model should collide with in Brickadia.",
+            );
+            ui.vertical(|ui| {
+                ui.checkbox(&mut self.player_collision, "Players");
+                ui.checkbox(&mut self.physics_collision, "Physics / brick grids");
+            });
+            ui.end_row();
+
             ui.label("Scale")
                 .on_hover_text("Overall size of the generated save");
             ui.add(
@@ -798,12 +837,7 @@ fn main() {
     let win_option = NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([WINDOW_WIDTH, WINDOW_HEIGHT])
-            .with_min_inner_size([960.0, 680.0])
-            .with_icon(egui::IconData {
-                rgba: icon::ICON.to_vec(),
-                width: 32,
-                height: 32,
-            }),
+            .with_min_inner_size([960.0, 680.0]),
         ..Default::default()
     };
     let _ = run_native(

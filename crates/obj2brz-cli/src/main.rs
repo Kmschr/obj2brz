@@ -20,6 +20,8 @@ OPTIONS:
         --bricktype <TYPE>       micro | default | tiles [default: micro]
         --material <MAT>         plastic | glass | glow | metallic | hologram | ghost [default: plastic]
         --material-intensity <N> 0-10 [default: 5]
+        --no-player-collision     Do not block players
+        --no-physics-collision    Do not collide with physics or brick grids
         --scale <F>              Overall scale multiplier [default: 1.0]
         --brick-scale <N>        Microbrick size multiplier [default: 1]
         --simplify               Lossy merge of similar bricks
@@ -97,6 +99,8 @@ fn run() -> Result<(), String> {
             Long("material-intensity") => {
                 opts.material_intensity = parser.value().map_err(|e| e.to_string())?.parse().map_err(|e| e.to_string())?;
             }
+            Long("no-player-collision") => opts.player_collision = false,
+            Long("no-physics-collision") => opts.physics_collision = false,
             Long("scale") => {
                 opts.scale = parser.value().map_err(|e| e.to_string())?.parse().map_err(|e| e.to_string())?;
             }
