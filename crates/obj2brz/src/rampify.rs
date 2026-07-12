@@ -6,7 +6,7 @@
 //! converter octree directly and emits `brdb::Brick`s, so that transient save
 //! (and its potentially millions of `Brick` allocations) does not exist.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use brdb::{Brick, BrickSize, BrickType, Color, Direction, Position, Rotation};
 use cgmath::Vector4;
@@ -18,6 +18,7 @@ use crate::{
 const RAMP_MAX_RUN: usize = 4;
 const RAMP_MAX_RISE: usize = 12;
 const MAX_GRID_VOXELS: usize = 64 * 1024 * 1024;
+const EXTERIOR_AIR: u32 = u32::MAX;
 
 #[derive(Clone, Copy)]
 struct Vox(isize, isize, isize);
@@ -89,10 +90,17 @@ impl Rampifier {
                 ConversionError::RampifyGridTooLarge("model bounds are not representable".into())
             })
         };
+        // Keep a one-voxel air border so flood fill can distinguish exterior
+        // air from the enclosed space inside a watertight mesh.
+        let origin = Vox(
+            min.0.checked_sub(1).ok_or_else(|| ConversionError::RampifyGridTooLarge("model bounds underflowed".into()))?,
+            min.1.checked_sub(1).ok_or_else(|| ConversionError::RampifyGridTooLarge("model bounds underflowed".into()))?,
+            min.2.checked_sub(1).ok_or_else(|| ConversionError::RampifyGridTooLarge("model bounds underflowed".into()))?,
+        );
         let size = (
-            dimension(min.0, max.0)?,
-            dimension(min.1, max.1)?,
-            dimension(min.2, max.2)?,
+            dimension(origin.0, max.0.checked_add(1).ok_or_else(|| ConversionError::RampifyGridTooLarge("model bounds overflowed".into()))?)?,
+            dimension(origin.1, max.1.checked_add(1).ok_or_else(|| ConversionError::RampifyGridTooLarge("model bounds overflowed".into()))?)?,
+            dimension(origin.2, max.2.checked_add(1).ok_or_else(|| ConversionError::RampifyGridTooLarge("model bounds overflowed".into()))?)?,
         );
         let cells = size
             .0
@@ -112,16 +120,21 @@ impl Rampifier {
             size,
             grid: vec![0; cells],
             occupied_by_ramps: HashSet::new(),
-            origin: min,
+            origin,
         };
         octree.for_each_leaf(|position, color| {
             let position = octree_to_brickadia_grid(position);
-            let local = Vox(position.0 - min.0, position.1 - min.1, position.2 - min.2);
+            let local = Vox(
+                position.0 - origin.0,
+                position.1 - origin.1,
+                position.2 - origin.2,
+            );
             let index = rampifier
                 .index(local)
                 .expect("octree leaf must be in its bounds");
             rampifier.grid[index] = pack_color(*color);
         });
+        rampifier.fill_enclosed_air();
         Ok(Some(rampifier))
     }
 
@@ -414,6 +427,71 @@ impl Rampifier {
         }
         length
     }
+
+    /// Rampifier replaces rectangular regions with sloped bricks, so it needs
+    /// a volume rather than a one-voxel shell. The OBJ voxelizer records only
+    /// intersected surface cells; fill air that is not reachable from the
+    /// padded grid boundary to make watertight imports solid. Open meshes are
+    /// left unchanged because their air remains connected to the exterior.
+    fn fill_enclosed_air(&mut self) {
+        let mut exterior = VecDeque::new();
+        for z in 0..self.size.2 as isize {
+            for y in 0..self.size.1 as isize {
+                for x in 0..self.size.0 as isize {
+                    if x != 0
+                        && y != 0
+                        && z != 0
+                        && x != self.size.0 as isize - 1
+                        && y != self.size.1 as isize - 1
+                        && z != self.size.2 as isize - 1
+                    {
+                        continue;
+                    }
+                    let position = Vox(x, y, z);
+                    let index = self.index(position).unwrap();
+                    if self.grid[index] == 0 {
+                        self.grid[index] = EXTERIOR_AIR;
+                        exterior.push_back(position);
+                    }
+                }
+            }
+        }
+
+        while let Some(position) = exterior.pop_front() {
+            for offset in [
+                Vox(1, 0, 0), Vox(-1, 0, 0), Vox(0, 1, 0),
+                Vox(0, -1, 0), Vox(0, 0, 1), Vox(0, 0, -1),
+            ] {
+                if let Some(index) = self.index(position + offset) {
+                    if self.grid[index] == 0 {
+                        self.grid[index] = EXTERIOR_AIR;
+                        exterior.push_back(position + offset);
+                    }
+                }
+            }
+        }
+
+        let interior_color = self
+            .grid
+            .iter()
+            .copied()
+            .filter(|color| *color != 0 && *color != EXTERIOR_AIR)
+            .fold(HashMap::<u32, usize>::new(), |mut counts, color| {
+                *counts.entry(color).or_default() += 1;
+                counts
+            })
+            .into_iter()
+            .max_by_key(|(_, count)| *count)
+            .map(|(color, _)| color);
+
+        for color in &mut self.grid {
+            if *color == EXTERIOR_AIR {
+                *color = 0;
+            } else if *color == 0 {
+                *color = interior_color.unwrap_or(0);
+            }
+        }
+    }
 }
 
 pub fn rampify(
@@ -522,6 +600,24 @@ mod tests {
             TreeBody::Leaf(Vector4::new(1, 2, 3, 255));
 
         let rampifier = Rampifier::from_octree(&tree).unwrap().unwrap();
-        assert_eq!(rampifier.size, (2, 3, 6));
+        assert_eq!(rampifier.size, (4, 5, 8));
+    }
+
+    #[test]
+    fn fills_enclosed_shells_before_generating_ramps() {
+        let mut tree = VoxelTree::new();
+        for x in 0..3 {
+            for y in 0..3 {
+                for z in 0..3 {
+                    if x == 0 || x == 2 || y == 0 || y == 2 || z == 0 || z == 2 {
+                        *tree.get_mut_or_create(cgmath::Vector3::new(x, y, z)) =
+                            TreeBody::Leaf(Vector4::new(1, 2, 3, 255));
+                    }
+                }
+            }
+        }
+
+        let rampifier = Rampifier::from_octree(&tree).unwrap().unwrap();
+        assert_ne!(rampifier.voxel(Vox(2, 2, 2)), 0);
     }
 }
