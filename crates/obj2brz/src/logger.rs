@@ -34,6 +34,12 @@ impl Logger {
         }
     }
 
+    pub fn clear(&self) {
+        if let Ok(mut messages) = self.messages.lock() {
+            messages.clear();
+        }
+    }
+
     pub fn get_messages(&self) -> Vec<String> {
         self.messages.lock().ok()
             .map(|m| m.clone())

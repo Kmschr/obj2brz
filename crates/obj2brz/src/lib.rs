@@ -5,13 +5,11 @@
 
 mod barycentric;
 mod brdb_support;
-mod color;
 mod convert;
 mod error;
 mod intersect;
 mod logger;
 mod octree;
-mod palette;
 mod simplify;
 mod voxelize;
 

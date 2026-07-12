@@ -179,7 +179,6 @@ mod tests {
         let opts = ConvertOptions::default();
         let data = SaveData {
             bricks: vec![Brick::default()],
-            colors: Vec::new(),
             author_name: opts.save_owner_name.clone(),
         };
 

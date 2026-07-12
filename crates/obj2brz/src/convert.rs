@@ -2,11 +2,10 @@ use crate::brdb_support;
 use crate::error::{ConversionError, ConversionResult, MissingResources};
 use crate::logger::Logger;
 use crate::octree;
-use crate::palette;
 use crate::simplify::*;
 use crate::voxelize::voxelize;
 
-use brdb::{Brick, Color, Entity};
+use brdb::{Brick, Entity};
 use cgmath::Vector4;
 use serde::{Deserialize, Serialize};
 use std::{io::Cursor, path::Path, path::PathBuf};
@@ -18,7 +17,6 @@ const OBJ_ICON: &[u8; 10987] = include_bytes!("../res/obj_icon.png");
 #[derive(Clone)]
 pub struct SaveData {
     pub bricks: Vec<Brick>,
-    pub colors: Vec<Color>,
     pub author_name: String,
 }
 
@@ -30,7 +28,6 @@ pub struct ConvertOptions {
     pub bricktype: BrickType,
     pub brick_scale: isize,
     pub input_file_path: String,
-    pub match_brickadia_colorset: bool,
     pub material: Material,
     pub material_intensity: u32,
     pub output_directory: String,
@@ -55,7 +52,6 @@ impl Default for ConvertOptions {
             bricktype: BrickType::Microbricks,
             brick_scale: 1,
             input_file_path: "test.obj".into(),
-            match_brickadia_colorset: false,
             material: Material::Plastic,
             material_intensity: 5,
             output_directory: "builds".into(),
@@ -122,13 +118,17 @@ fn create_solid_color_texture(diffuse: [f32; 3], dissolve: f32) -> image::RgbaIm
         0,
         0,
         image::Rgba([
-            crate::color::ftoi(diffuse[0]),
-            crate::color::ftoi(diffuse[1]),
-            crate::color::ftoi(diffuse[2]),
-            crate::color::ftoi(dissolve),
+            float_to_color_channel(diffuse[0]),
+            float_to_color_channel(diffuse[1]),
+            float_to_color_channel(diffuse[2]),
+            float_to_color_channel(dissolve),
         ]),
     );
     img
+}
+
+fn float_to_color_channel(value: f32) -> u8 {
+    (value.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 /// Validates OBJ file and checks for missing resources
@@ -210,7 +210,6 @@ pub fn convert(opts: &ConvertOptions, skip_textures: bool) -> ConversionResult<(
             let max_merge = 500;
             let mut save_data = SaveData {
                 bricks: Vec::new(),
-                colors: palette::DEFAULT_PALETTE.to_vec(),
                 author_name: opts.save_owner_name.clone(),
             };
 
@@ -408,7 +407,6 @@ fn write_brz_data(octree: &mut octree::VoxelTree<Vector4<u8>>, opts: &ConvertOpt
 
     let mut save_data = SaveData {
         bricks: Vec::new(),
-        colors: palette::DEFAULT_PALETTE.to_vec(),
         author_name: opts.save_owner_name.clone(),
     };
 

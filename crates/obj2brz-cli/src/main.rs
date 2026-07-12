@@ -23,7 +23,6 @@ OPTIONS:
         --scale <F>              Overall scale multiplier [default: 1.0]
         --brick-scale <N>        Microbrick size multiplier [default: 1]
         --simplify               Lossy merge of similar bricks
-        --match-colorset         Snap colors to the default Brickadia palette
         --split-by-material      One frozen grid per OBJ material
         --grid-offset <X> <Y> <Z>  Spacing between material grids [default: 0 0 0]
         --owner-id <UUID>        Brick owner id
@@ -104,7 +103,6 @@ fn run() -> Result<(), String> {
                 opts.brick_scale = parser.value().map_err(|e| e.to_string())?.parse().map_err(|e| e.to_string())?;
             }
             Long("simplify") => opts.simplify = true,
-            Long("match-colorset") => opts.match_brickadia_colorset = true,
             Long("split-by-material") => opts.split_by_material = true,
             Long("grid-offset") => {
                 opts.grid_offset_x = parser.value().map_err(|e| e.to_string())?.parse().map_err(|e| e.to_string())?;

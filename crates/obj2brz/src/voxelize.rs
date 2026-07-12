@@ -1,5 +1,4 @@
 use crate::barycentric::interpolate_uv;
-use crate::color::*;
 use crate::BrickType;
 use crate::intersect::intersect;
 use crate::octree::{Branches, TreeBody, VoxelTree};
@@ -193,8 +192,28 @@ fn recursive_voxelize(
                     recursive_voxelize(b, m, triangles, materials);
                 }
             } else {
-                *branch = TreeBody::Leaf(hsv2rgb(hsv_average(&colors)));
+                *branch = TreeBody::Leaf(average_rgba(&colors));
             }
         }
     }
+}
+
+fn average_rgba(colors: &[Vector4<u8>]) -> Vector4<u8> {
+    if colors.is_empty() {
+        return Vector4::new(255, 255, 255, 255);
+    }
+
+    let sums = colors.iter().fold([0_u32; 4], |mut sums, color| {
+        for (index, sum) in sums.iter_mut().enumerate() {
+            *sum += u32::from(color[index]);
+        }
+        sums
+    });
+    let count = colors.len() as u32;
+    Vector4::new(
+        ((sums[0] + count / 2) / count) as u8,
+        ((sums[1] + count / 2) / count) as u8,
+        ((sums[2] + count / 2) / count) as u8,
+        ((sums[3] + count / 2) / count) as u8,
+    )
 }

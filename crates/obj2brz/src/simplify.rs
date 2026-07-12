@@ -1,16 +1,8 @@
-use crate::color::*;
 use crate::octree::{TreeBody, VoxelTree};
 use crate::{BrickType, ConvertOptions, SaveData};
 
 use brdb::{Brick, BrickSize, BrickType as BrdbBrickType, Color, Direction, Position, Rotation};
 use cgmath::{Vector3, Vector4};
-
-// Enum to represent brick colors (index or unique)
-#[derive(Debug, Clone, Copy)]
-pub enum BrickColor {
-    Index(u32),
-    Unique(Color),
-}
 
 pub fn simplify_lossy(
     octree: &mut VoxelTree<Vector4<u8>>,
@@ -18,7 +10,6 @@ pub fn simplify_lossy(
     opts: &ConvertOptions,
     max_merge: isize,
 ) {
-    let colorset = convert_colorset_to_hsv(&save_data.colors);
     let scales: (isize, isize, isize) = if opts.bricktype == BrickType::Microbricks {
         (opts.brick_scale, opts.brick_scale, opts.brick_scale)
     } else {
@@ -117,13 +108,7 @@ pub fn simplify_lossy(
             }
         }
 
-        let avg_color = hsv_average(&colors);
-        let color = if opts.match_brickadia_colorset {
-            BrickColor::Index(match_hsv_to_colorset(&colorset, &avg_color) as u32)
-        } else {
-            let rgba = gamma_correct(hsv2rgb(avg_color));
-            BrickColor::Unique(Color::new(rgba[0], rgba[1], rgba[2]))
-        };
+        let color = rgba_to_brick_color(average_rgba(&colors));
 
         let width = xp - x;
         let height = yp - y;
@@ -131,7 +116,6 @@ pub fn simplify_lossy(
 
         save_data.bricks.push(create_brick(
             opts,
-            &save_data.colors,
             scales,
             (width, depth, height),
             (x, z, y),
@@ -149,8 +133,6 @@ pub fn simplify_lossless(
     let d: isize = 1 << octree.size;
     let len = d + 1;
 
-    let colorset = convert_colorset_to_hsv(&save_data.colors);
-
     let scales: (isize, isize, isize) = if opts.bricktype == BrickType::Microbricks {
         (opts.brick_scale, opts.brick_scale, opts.brick_scale)
     } else {
@@ -161,8 +143,8 @@ pub fn simplify_lossless(
     let max_merge = max_merge / max_scale;
 
     loop {
-        let matched_color;
-        let unmatched_color;
+        let source_color;
+        let color;
         let x;
         let y;
         let z;
@@ -175,13 +157,8 @@ pub fn simplify_lossless(
 
             match voxel {
                 TreeBody::Leaf(leaf_color) => {
-                    let final_color = gamma_correct(*leaf_color);
-                    matched_color = match_hsv_to_colorset(&colorset, &rgb2hsv(final_color));
-                    unmatched_color = BrickColor::Unique(Color::new(
-                        final_color[0],
-                        final_color[1],
-                        final_color[2],
-                    ));
+                    source_color = *leaf_color;
+                    color = rgba_to_brick_color(source_color);
                 }
                 _ => break,
             }
@@ -197,9 +174,7 @@ pub fn simplify_lossless(
             let voxel = octree.get_mut_or_create(Vector3::new(x, y, zp));
             match voxel {
                 TreeBody::Leaf(leaf_color) => {
-                    let final_color = gamma_correct(*leaf_color);
-                    let color_temp = match_hsv_to_colorset(&colorset, &rgb2hsv(final_color));
-                    if color_temp != matched_color {
+                    if *leaf_color != source_color {
                         break;
                     }
                     zp += 1;
@@ -214,9 +189,7 @@ pub fn simplify_lossless(
                 let voxel = octree.get_mut_or_create(Vector3::new(x, yp, sz));
                 match voxel {
                     TreeBody::Leaf(leaf_color) => {
-                        let final_color = gamma_correct(*leaf_color);
-                        let color_temp = match_hsv_to_colorset(&colorset, &rgb2hsv(final_color));
-                        if color_temp != matched_color {
+                        if *leaf_color != source_color {
                             pass = false;
                             break;
                         }
@@ -239,11 +212,8 @@ pub fn simplify_lossless(
                 for sz in z..zp {
                     let voxel = octree.get_mut_or_create(Vector3::new(xp, sy, sz));
                     match voxel {
-                        TreeBody::Leaf(leaf_color) => {
-                            let final_color = gamma_correct(*leaf_color);
-                            let color_temp =
-                                match_hsv_to_colorset(&colorset, &rgb2hsv(final_color));
-                            if color_temp != matched_color {
+                    TreeBody::Leaf(leaf_color) => {
+                            if *leaf_color != source_color {
                                 pass = false;
                                 break;
                             }
@@ -280,15 +250,8 @@ pub fn simplify_lossless(
         let height = yp - y;
         let depth = zp - z;
 
-        let color = if opts.match_brickadia_colorset {
-            BrickColor::Index(matched_color as u32)
-        } else {
-            unmatched_color
-        };
-
         save_data.bricks.push(create_brick(
             opts,
-            &save_data.colors,
             scales,
             (width, depth, height),
             (x, z, y),
@@ -299,11 +262,10 @@ pub fn simplify_lossless(
 
 fn create_brick(
     opts: &ConvertOptions,
-    palette: &[Color],
     scale: (isize, isize, isize),
     size: (isize, isize, isize),
     pos: (isize, isize, isize),
-    color: BrickColor,
+    color: Color,
 ) -> Brick {
     let brick_size = BrickSize::new(
         (scale.0 * size.0) as u16,
@@ -327,17 +289,6 @@ fn create_brick(
 
     let brick_type = BrdbBrickType::from((asset_name, brick_size));
 
-    let brick_color = match color {
-        BrickColor::Unique(c) => c,
-        BrickColor::Index(idx) => {
-            if (idx as usize) < palette.len() {
-                palette[idx as usize]
-            } else {
-                Color::new(255, 255, 255)
-            }
-        }
-    };
-
     Brick {
         id: None,
         asset: brick_type,
@@ -348,7 +299,7 @@ fn create_brick(
         direction: Direction::ZPositive,
         collision: Default::default(),
         visible: true,
-        color: brick_color,
+        color,
         material: match opts.material {
             crate::Material::Plastic => "BMC_Plastic".into(),
             crate::Material::Glass => "BMC_Glass".into(),
@@ -360,4 +311,28 @@ fn create_brick(
         material_intensity: opts.material_intensity as u8,
         components: Vec::new(),
     }
+}
+
+fn average_rgba(colors: &[Vector4<u8>]) -> Vector4<u8> {
+    if colors.is_empty() {
+        return Vector4::new(255, 255, 255, 255);
+    }
+
+    let sums = colors.iter().fold([0_u32; 4], |mut sums, color| {
+        for (index, sum) in sums.iter_mut().enumerate() {
+            *sum += u32::from(color[index]);
+        }
+        sums
+    });
+    let count = colors.len() as u32;
+    Vector4::new(
+        ((sums[0] + count / 2) / count) as u8,
+        ((sums[1] + count / 2) / count) as u8,
+        ((sums[2] + count / 2) / count) as u8,
+        ((sums[3] + count / 2) / count) as u8,
+    )
+}
+
+fn rgba_to_brick_color(color: Vector4<u8>) -> Color {
+    Color::new(color[0], color[1], color[2])
 }
