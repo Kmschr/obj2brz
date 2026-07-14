@@ -14,6 +14,11 @@ uuid.workspace = true
 thiserror = "2.0"
 serde.workspace = true
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# FBX import; a C library that cannot target wasm32-unknown-unknown, so the
+# browser build reports FBX as unsupported instead.
+ufbx = "0.11"
+
 [target.'cfg(windows)'.dependencies]
 clipboard-win = { version = "5.4.1", features = ["windows-win"] }
 

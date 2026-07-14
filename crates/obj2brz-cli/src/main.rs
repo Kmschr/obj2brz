@@ -10,7 +10,7 @@ use obj2brz::{
 const HELP: &str = "\
 obj2brz - convert 3D models into Brickadia saves (BRZ/BRDB)
 
-Supported inputs: Wavefront OBJ (.obj) and STL (.stl).
+Supported inputs: Wavefront OBJ (.obj), STL (.stl), and FBX (.fbx).
 
 USAGE:
     obj2brz [OPTIONS] <input.obj|input.stl>

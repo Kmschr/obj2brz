@@ -6,7 +6,8 @@ a5 adaptation of [textured-voxelizer](https://github.com/CheezBarger/textured-vo
 
 ![Rampified import](banner2.png)
 
-Generates textured voxel models from OBJ files.
+Generates textured voxel models from OBJ, STL, and FBX files (FBX on
+desktop/CLI only; the browser build cannot run the C-based FBX parser).
 
 ## Workspace layout
 
