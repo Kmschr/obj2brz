@@ -320,7 +320,7 @@ impl Obj2Brs {
         self.web_file_receiver = Some(rx);
         wasm_bindgen_futures::spawn_local(async move {
             if let Some(handle) = rfd::AsyncFileDialog::new()
-                .add_filter("3D Model", &["obj", "stl"])
+                .add_filter("3D Model", &["obj", "stl", "gltf", "glb"])
                 .pick_file()
                 .await
             {
@@ -514,7 +514,7 @@ impl Obj2Brs {
                 self.input_file_path_receiver = Some(rx);
                 thread::spawn(move || {
                     let obj_path = FileDialog::new()
-                        .add_filter("3D Model", &["obj", "stl", "fbx"])
+                        .add_filter("3D Model", &["obj", "stl", "fbx", "gltf", "glb"])
                         .pick_file();
                     let _ = tx.send(obj_path);
                 });

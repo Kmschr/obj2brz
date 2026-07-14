@@ -4,6 +4,7 @@ use crate::logger::Logger;
 use crate::octree;
 use crate::rampify;
 use crate::fbx;
+use crate::gltf_support;
 use crate::simplify::*;
 use crate::stl;
 use crate::voxelize::voxelize;
@@ -196,7 +197,10 @@ pub fn validate_obj_resources(obj_path: &str) -> ConversionResult<MissingResourc
         return Err(ConversionError::ObjFileNotFound { path: p.to_path_buf() });
     }
 
-    if stl::is_stl_path(obj_path) || fbx::is_fbx_path(obj_path) {
+    if stl::is_stl_path(obj_path)
+        || fbx::is_fbx_path(obj_path)
+        || gltf_support::is_gltf_path(obj_path)
+    {
         return Ok(MissingResources::new());
     }
 
@@ -273,6 +277,10 @@ pub fn model_bounds(obj_path: &str) -> ConversionResult<ModelBounds> {
         return bounds_from_models(&fbx::load_fbx(path)?.0);
     }
 
+    if gltf_support::is_gltf_path(obj_path) {
+        return bounds_from_models(&gltf_support::load_gltf(path)?.0);
+    }
+
     let (models, _) = tobj::load_obj(obj_path, &default_load_options())
         .map_err(|e| ConversionError::ObjParseError(e.to_string()))?;
 
@@ -288,6 +296,10 @@ pub fn model_bounds_from_bytes(obj_bytes: &[u8]) -> ConversionResult<ModelBounds
 
     if fbx::looks_like_fbx(obj_bytes) {
         return bounds_from_models(&fbx::load_fbx_bytes(obj_bytes)?.0);
+    }
+
+    if gltf_support::looks_like_gltf(obj_bytes) {
+        return bounds_from_models(&gltf_support::load_gltf_bytes(obj_bytes)?.0);
     }
 
     let mut reader = Cursor::new(obj_bytes);
@@ -488,6 +500,12 @@ fn load_models_and_materials(
     if fbx::is_fbx_path(&opt.input_file_path) {
         opt.logger.log("Importing FBX model...".to_string());
         let (models, material_images) = fbx::load_fbx(p)?;
+        return finish_prebaked_models(models, material_images, opt);
+    }
+
+    if gltf_support::is_gltf_path(&opt.input_file_path) {
+        opt.logger.log("Importing glTF model...".to_string());
+        let (models, material_images) = gltf_support::load_gltf(p)?;
         return finish_prebaked_models(models, material_images, opt);
     }
 
@@ -694,6 +712,12 @@ fn load_models_from_buf(
     if fbx::looks_like_fbx(obj_bytes) {
         opt.logger.log("Importing FBX model...".to_string());
         let (models, material_images) = fbx::load_fbx_bytes(obj_bytes)?;
+        return finish_prebaked_models(models, material_images, opt);
+    }
+
+    if gltf_support::looks_like_gltf(obj_bytes) {
+        opt.logger.log("Importing glTF model...".to_string());
+        let (models, material_images) = gltf_support::load_gltf_bytes(obj_bytes)?;
         return finish_prebaked_models(models, material_images, opt);
     }
 

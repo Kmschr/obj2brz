@@ -13,6 +13,7 @@ image = "0.24"
 uuid.workspace = true
 thiserror = "2.0"
 serde.workspace = true
+gltf = "1.4.1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # FBX import; a C library that cannot target wasm32-unknown-unknown, so the
