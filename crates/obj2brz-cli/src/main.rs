@@ -11,7 +11,9 @@ const HELP: &str = "\
 obj2brz - convert 3D models into Brickadia saves (BRZ/BRDB)
 
 Supported inputs: Wavefront OBJ (.obj), STL (.stl), glTF (.gltf/.glb),
-and FBX (.fbx).
+FBX (.fbx), and LDraw (.dat, .ldr, .mpd). LDraw part references resolve
+against the model's directory and an installed LDraw parts library
+(LDRAWDIR, ~/.ldraw, /usr/share/ldraw).
 
 USAGE:
     obj2brz [OPTIONS] <input-model>
@@ -26,6 +28,8 @@ OPTIONS:
         --no-player-collision     Do not block players
         --no-physics-collision    Do not collide with physics or brick grids
         --scale <F>              Overall scale multiplier [default: 1.0]
+                                 (ignored for LDraw input, which always converts
+                                 at true scale: 1 LEGO stud = 1 Brickadia stud)
         --brick-scale <N>        Microbrick size multiplier [default: 1]
         --simplify               Lossy merge of similar bricks
         --rampify                Generate default ramps directly from voxels
@@ -157,7 +161,9 @@ fn run() -> Result<(), String> {
     let missing = validate_obj_resources(&opts.input_file_path).map_err(|e| e.to_string())?;
     if missing.has_issues() {
         eprintln!("Warning: missing resources:\n{}", missing.description());
-        if !skip_textures {
+        // Missing LDraw parts only skip that part's geometry; missing textures
+        // would otherwise abort mid-conversion, so require an explicit opt-out.
+        if !missing.missing_textures.is_empty() && !skip_textures {
             return Err("missing textures; re-run with --skip-textures to use flat material colors".into());
         }
     }

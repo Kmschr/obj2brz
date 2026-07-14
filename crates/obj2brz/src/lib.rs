@@ -1,5 +1,6 @@
 //! obj2brz core library: converts 3D models into Brickadia saves (BRZ/BRDB).
-//! Supported inputs: Wavefront OBJ, STL, glTF/GLB, and FBX (desktop/CLI only).
+//! Supported inputs: Wavefront OBJ, STL, glTF/GLB, LDraw (.dat/.ldr/.mpd), and
+//! FBX (desktop/CLI only).
 //!
 //! This crate is UI-agnostic. Build a [`ConvertOptions`] and call [`convert`];
 //! progress is reported through the [`Logger`] carried on the options.
@@ -11,6 +12,7 @@ mod error;
 mod fbx;
 mod gltf_support;
 mod intersect;
+mod ldraw;
 mod logger;
 mod octree;
 mod rampify;
@@ -23,6 +25,7 @@ pub use convert::{
     BrickType, ConvertOptions, Material, ModelBounds, OutputFormat, SaveData,
 };
 pub use error::{ConversionError, ConversionResult, MissingResources};
+pub use ldraw::is_ldraw_path;
 pub use logger::Logger;
 
 // Re-export brdb so front-ends can construct/inspect bricks without depending on

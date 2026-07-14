@@ -1,5 +1,6 @@
 use crate::brdb_support;
 use crate::error::{ConversionError, ConversionResult, MissingResources};
+use crate::ldraw;
 use crate::logger::Logger;
 use crate::octree;
 use crate::rampify;
@@ -139,12 +140,19 @@ impl ModelBounds {
 
     /// Estimates the generated save's width, depth, and height in studs.
     pub fn estimated_stud_dimensions(self, options: &ConvertOptions) -> [f32; 3] {
-        let stud_scale = options.scale
-            * if !options.rampify && options.bricktype == BrickType::Microbricks {
-                options.brick_scale as f32 / 5.0
-            } else {
-                1.0
-            };
+        // LDraw models are pinned at true scale: the loader measures them in
+        // studs and the converter compensates for the voxel grid, so one
+        // model unit is always exactly one stud.
+        let stud_scale = if ldraw::is_ldraw_path(&options.input_file_path) {
+            1.0
+        } else {
+            options.scale
+                * if !options.rampify && options.bricktype == BrickType::Microbricks {
+                    options.brick_scale as f32 / 5.0
+                } else {
+                    1.0
+                }
+        };
         let [width, height, depth] = self.dimensions();
         [width * stud_scale, depth * stud_scale, height * stud_scale]
     }
@@ -187,8 +195,9 @@ fn float_to_color_channel(value: f32) -> u8 {
     (value.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
-/// Validates the input model file and checks for missing resources. Only OBJ
-/// can reference external resources; other formats validate trivially.
+/// Validates the input model file and checks for missing resources.
+/// Dispatches on extension: OBJ files are checked for missing textures, LDraw
+/// files for unresolved part references; other formats validate trivially.
 pub fn validate_obj_resources(obj_path: &str) -> ConversionResult<MissingResources> {
     let p = Path::new(obj_path);
 
@@ -202,6 +211,13 @@ pub fn validate_obj_resources(obj_path: &str) -> ConversionResult<MissingResourc
         || gltf_support::is_gltf_path(obj_path)
     {
         return Ok(MissingResources::new());
+    }
+
+    if ldraw::is_ldraw_path(obj_path) {
+        let loaded = ldraw::load_ldraw(p, &Logger::new())?;
+        let mut missing = MissingResources::new();
+        missing.missing_subfiles = loaded.missing_subfiles;
+        return Ok(missing);
     }
 
     let load_options = LoadOptions {
@@ -281,6 +297,11 @@ pub fn model_bounds(obj_path: &str) -> ConversionResult<ModelBounds> {
         return bounds_from_models(&gltf_support::load_gltf(path)?.0);
     }
 
+    if ldraw::is_ldraw_path(obj_path) {
+        let loaded = ldraw::load_ldraw(path, &Logger::new())?;
+        return bounds_from_models(&loaded.models);
+    }
+
     let (models, _) = tobj::load_obj(obj_path, &default_load_options())
         .map_err(|e| ConversionError::ObjParseError(e.to_string()))?;
 
@@ -300,6 +321,11 @@ pub fn model_bounds_from_bytes(obj_bytes: &[u8]) -> ConversionResult<ModelBounds
 
     if gltf_support::looks_like_gltf(obj_bytes) {
         return bounds_from_models(&gltf_support::load_gltf_bytes(obj_bytes)?.0);
+    }
+
+    if ldraw::looks_like_ldraw(obj_bytes) {
+        let loaded = ldraw::load_ldraw_bytes(obj_bytes, &Logger::new())?;
+        return bounds_from_models(&loaded.models);
     }
 
     let mut reader = Cursor::new(obj_bytes);
@@ -373,6 +399,140 @@ f 2 3 7\nf 2 7 6\nf 3 4 8\nf 3 8 7\nf 4 1 5\nf 4 5 8\n";
         let bounds = model_bounds_from_bytes(CUBE_OBJ.as_bytes()).unwrap();
         assert_eq!(bounds.min, [0.0, 0.0, 0.0]);
         assert_eq!(bounds.max, [1.0, 1.0, 1.0]);
+    }
+
+    /// 40x40x24 LDU red box (a 2x2 brick) out of LDraw quads.
+    const BOX_DAT: &str = "\
+0 ldraw test box
+4 4 -20 -24 -20 20 -24 -20 20 -24 20 -20 -24 20
+4 4 -20 0 -20 20 0 -20 20 0 20 -20 0 20
+4 4 -20 -24 -20 20 -24 -20 20 0 -20 -20 0 -20
+4 4 -20 -24 20 20 -24 20 20 0 20 -20 0 20
+4 4 -20 -24 -20 -20 -24 20 -20 0 20 -20 0 -20
+4 4 20 -24 -20 20 -24 20 20 0 20 20 0 -20
+";
+
+    #[test]
+    fn converts_in_memory_ldraw_to_brz_bytes() {
+        let opts = ConvertOptions {
+            scale: 4.0,
+            ..ConvertOptions::default()
+        };
+
+        let bytes = convert_obj_bytes_to_brz(&opts, BOX_DAT.as_bytes()).unwrap();
+
+        assert!(bytes.starts_with(b"BRZ"), "output is not a BRZ archive");
+    }
+
+    #[test]
+    fn measures_ldraw_bounds_from_bytes() {
+        let bounds = model_bounds_from_bytes(BOX_DAT.as_bytes()).unwrap();
+        assert_eq!(bounds.min, [-1.0, 0.0, -1.0]);
+        assert_eq!(bounds.max, [1.0, 1.2, 1.0]);
+    }
+
+    /// Converts BOX_DAT and measures the generated bricks' bounding box in
+    /// Brickadia world units (brick sizes are half-extents).
+    fn converted_ldraw_box_world_dimensions(opts: &ConvertOptions) -> [i32; 3] {
+        let (mut models, images) = load_models_from_buf(BOX_DAT.as_bytes(), opts).unwrap();
+        let mut octree = voxelize_models(&mut models, &images, opts, None);
+        let save_data = octree_to_save_data(&mut octree, opts, None).unwrap();
+        assert!(!save_data.bricks.is_empty());
+
+        let mut min = [i32::MAX; 3];
+        let mut max = [i32::MIN; 3];
+        for brick in &save_data.bricks {
+            let brdb::BrickType::Procedural { size, .. } = &brick.asset else {
+                panic!("expected procedural bricks");
+            };
+            let position = [brick.position.x, brick.position.y, brick.position.z];
+            let size = [size.x as i32, size.y as i32, size.z as i32];
+            for axis in 0..3 {
+                min[axis] = min[axis].min(position[axis] - size[axis]);
+                max[axis] = max[axis].max(position[axis] + size[axis]);
+            }
+        }
+        [max[0] - min[0], max[1] - min[1], max[2] - min[2]]
+    }
+
+    #[test]
+    fn ldraw_bricks_span_true_world_size() {
+        // A 2x2 LEGO brick must span 2x2 studs (20x20 units) and one brick
+        // height (12 units) in Brickadia, whatever the scale setting says.
+        // Exactness needs the voxel size to divide both 10 (stud) and 12
+        // (brick height): 1x microbricks (2-unit voxels) and default bricks
+        // (10x10x4 voxels) qualify; larger microbrick scales round to the
+        // coarser grid.
+        for (bricktype, brick_scale, scale) in [
+            (BrickType::Microbricks, 1, 3.0),
+            (BrickType::Microbricks, 1, 0.5),
+            (BrickType::Default, 1, 10.0),
+        ] {
+            let opts = ConvertOptions {
+                input_file_path: "brick.dat".into(),
+                bricktype,
+                brick_scale,
+                scale,
+                ..ConvertOptions::default()
+            };
+            assert_eq!(
+                converted_ldraw_box_world_dimensions(&opts),
+                [20, 20, 12],
+                "wrong world size for {bricktype:?} brick_scale={brick_scale} scale={scale}"
+            );
+        }
+    }
+
+    #[test]
+    fn ldraw_models_are_pinned_at_true_scale() {
+        let bounds = model_bounds_from_bytes(BOX_DAT.as_bytes()).unwrap();
+
+        // A 2x2 LEGO brick is 2x2 studs and 1.2 studs tall, regardless of the
+        // scale setting or brick type.
+        for (bricktype, brick_scale, scale) in [
+            (BrickType::Microbricks, 1, 3.0),
+            (BrickType::Microbricks, 5, 0.5),
+            (BrickType::Default, 1, 10.0),
+        ] {
+            let opts = ConvertOptions {
+                input_file_path: "brick.dat".into(),
+                bricktype,
+                brick_scale,
+                scale,
+                ..ConvertOptions::default()
+            };
+            assert_eq!(bounds.estimated_stud_dimensions(&opts), [2.0, 2.0, 1.2]);
+
+            // One stud must span exactly 10 world units on the voxel grid:
+            // microbrick voxels are 2 * brick_scale units, others 10 units.
+            let voxel_units = match bricktype {
+                BrickType::Microbricks => 2 * brick_scale,
+                _ => 10,
+            };
+            assert_eq!(ldraw_scale(&opts) * voxel_units as f32, 10.0);
+        }
+    }
+
+    #[test]
+    fn measures_ldraw_bounds_from_file() {
+        let path = std::env::temp_dir().join(format!(
+            "obj2brz-ldraw-{}-{}.dat",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::write(&path, BOX_DAT).unwrap();
+
+        let bounds = model_bounds(path.to_str().unwrap()).unwrap();
+        assert_eq!(bounds.min, [-1.0, 0.0, -1.0]);
+        assert_eq!(bounds.max, [1.0, 1.2, 1.0]);
+
+        let missing = validate_obj_resources(path.to_str().unwrap()).unwrap();
+        assert!(!missing.has_issues());
+
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -509,6 +669,10 @@ fn load_models_and_materials(
         return finish_prebaked_models(models, material_images, opt);
     }
 
+    if ldraw::is_ldraw_path(&opt.input_file_path) {
+        return load_ldraw_models(ldraw::load_ldraw(p, &opt.logger)?, opt);
+    }
+
     opt.logger.log("Importing model...".to_string());
     let load_options = LoadOptions {
         triangulate: true,
@@ -638,6 +802,99 @@ fn finish_prebaked_models(
     Ok((models, material_images))
 }
 
+/// Voxel-grid scale that pins LDraw models at true size: one LEGO stud (20
+/// LDU, one loader unit) = one Brickadia stud (10 world units). Default
+/// bricks and ramps voxelize at one stud per voxel, so no scaling is needed;
+/// microbricks voxelize at `2 * brick_scale` world units per voxel and need
+/// `5 / brick_scale` voxels per stud. The LEGO 24-LDU brick height lands
+/// exactly on Brickadia's 12-unit brick height in both cases.
+fn ldraw_scale(opts: &ConvertOptions) -> f32 {
+    if !opts.rampify && opts.bricktype == BrickType::Microbricks {
+        5.0 / opts.brick_scale.max(1) as f32
+    } else {
+        1.0
+    }
+}
+
+/// Finishes an LDraw load: reports unresolved parts and applies the same
+/// scaling pass the OBJ path uses, at the fixed true-scale factor — the
+/// user scale setting deliberately does not apply to LDraw models. LDraw
+/// colours arrive pre-baked as one solid-colour material per model, so
+/// textures are never involved.
+fn load_ldraw_models(
+    loaded: ldraw::LDrawModel,
+    opt: &ConvertOptions,
+) -> ConversionResult<(Vec<tobj::Model>, Vec<image::RgbaImage>)> {
+    if !loaded.missing_subfiles.is_empty() {
+        opt.logger.log(format!(
+            "Warning: {} unresolved LDraw part(s); their geometry is skipped",
+            loaded.missing_subfiles.len()
+        ));
+    }
+
+    if opt.scale != 1.0 {
+        opt.logger.log(
+            "LDraw models convert at true scale (1 LEGO stud = 1 Brickadia stud); scale setting ignored"
+                .to_string(),
+        );
+    }
+
+    let mut models = loaded.models;
+    nudge_off_voxel_boundaries(&mut models);
+    scale_models(
+        &mut models,
+        ldraw_scale(opt),
+        if opt.rampify { BrickType::Default } else { opt.bricktype },
+    );
+
+    Ok((models, loaded.material_images))
+}
+
+/// LDraw geometry is grid-aligned: every face lies exactly on a voxel
+/// boundary, where the voxelizer claims the voxels on both sides and fattens
+/// each part by one voxel per side. Shrinking the model by an epsilon about
+/// its center pulls every exterior face strictly inside its own voxel (faces
+/// near the center barely move, but those only produce interior voxels that
+/// are filled anyway). The model is then rested just above the ground plane:
+/// this keeps the bottom face off the zero boundary, and `scale_models` only
+/// re-grounds meshes that dip below zero, so the margin survives.
+fn nudge_off_voxel_boundaries(models: &mut [tobj::Model]) {
+    const EPSILON: f32 = 1e-4;
+
+    let mut min = [f32::INFINITY; 3];
+    let mut max = [f32::NEG_INFINITY; 3];
+    for model in models.iter() {
+        for vertex in model.mesh.positions.chunks_exact(3) {
+            for axis in 0..3 {
+                min[axis] = min[axis].min(vertex[axis]);
+                max[axis] = max[axis].max(vertex[axis]);
+            }
+        }
+    }
+    if min.iter().any(|value| !value.is_finite()) {
+        return;
+    }
+
+    let center = [
+        (min[0] + max[0]) / 2.0,
+        (min[1] + max[1]) / 2.0,
+        (min[2] + max[2]) / 2.0,
+    ];
+    // The shrunken bottom face sits at half the margin the shrink gave the
+    // top face, so both stay strictly inside their voxels.
+    let shrunk_min_z = center[2] + (min[2] - center[2]) * (1.0 - EPSILON);
+    let lift = 0.25 * EPSILON * (max[2] - min[2]).max(1.0) - shrunk_min_z;
+
+    for model in models.iter_mut() {
+        for vertex in model.mesh.positions.chunks_exact_mut(3) {
+            for axis in 0..3 {
+                vertex[axis] = center[axis] + (vertex[axis] - center[axis]) * (1.0 - EPSILON);
+            }
+            vertex[2] += lift;
+        }
+    }
+}
+
 fn scale_models(models: &mut [tobj::Model], scale: f32, bricktype: BrickType) {
     // Determine model AABB to expand triangle octree to final size
     // Multiply y-coordinate by 2.5 to take into account plates
@@ -697,9 +954,10 @@ fn generate_octree(opt: &ConvertOptions, skip_textures: bool, material_filter: O
     Ok(voxelize_models(&mut models, &material_images, opt, material_filter))
 }
 
-/// Loads model geometry straight from bytes for the browser build; the
-/// format is detected from the content. Without the sibling `.mtl`/textures
-/// every OBJ face falls back to a default white material.
+/// Loads model geometry straight from bytes for the browser build; the format
+/// is detected from the content. Without the sibling `.mtl`/textures every OBJ
+/// face falls back to a default white material; LDraw colours are
+/// self-contained and survive intact.
 fn load_models_from_buf(
     obj_bytes: &[u8],
     opt: &ConvertOptions,
@@ -719,6 +977,10 @@ fn load_models_from_buf(
         opt.logger.log("Importing glTF model...".to_string());
         let (models, material_images) = gltf_support::load_gltf_bytes(obj_bytes)?;
         return finish_prebaked_models(models, material_images, opt);
+    }
+
+    if ldraw::looks_like_ldraw(obj_bytes) {
+        return load_ldraw_models(ldraw::load_ldraw_bytes(obj_bytes, &opt.logger)?, opt);
     }
 
     let mut reader = Cursor::new(obj_bytes);

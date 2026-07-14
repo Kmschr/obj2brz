@@ -3,10 +3,10 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum ConversionError {
-    #[error("Failed to open OBJ file: {path}")]
+    #[error("Failed to open model file: {path}")]
     ObjFileNotFound { path: PathBuf },
 
-    #[error("Failed to parse OBJ file: {0}")]
+    #[error("Failed to parse model file: {0}")]
     ObjParseError(String),
 
     #[error("Failed to load texture {path}: {reason}")]
@@ -30,6 +30,8 @@ pub type ConversionResult<T> = Result<T, ConversionError>;
 pub struct MissingResources {
     pub missing_textures: Vec<(String, PathBuf)>, // (material_name, texture_path)
     pub missing_materials: bool,
+    /// LDraw subfile references (parts) that could not be resolved.
+    pub missing_subfiles: Vec<String>,
 }
 
 impl Default for MissingResources {
@@ -43,11 +45,12 @@ impl MissingResources {
         Self {
             missing_textures: Vec::new(),
             missing_materials: false,
+            missing_subfiles: Vec::new(),
         }
     }
 
     pub fn has_issues(&self) -> bool {
-        !self.missing_textures.is_empty() || self.missing_materials
+        !self.missing_textures.is_empty() || self.missing_materials || !self.missing_subfiles.is_empty()
     }
 
     pub fn description(&self) -> String {
@@ -63,6 +66,16 @@ impl MissingResources {
                 desc.push_str(&format!("  Material: {}\n", material));
                 desc.push_str(&format!("  Expected: {}\n\n",
                     path.display()));
+            }
+        }
+
+        if !self.missing_subfiles.is_empty() {
+            desc.push_str(&format!(
+                "• {} missing LDraw part(s) (install the LDraw parts library or set LDRAWDIR):\n\n",
+                self.missing_subfiles.len()
+            ));
+            for name in &self.missing_subfiles {
+                desc.push_str(&format!("  Part: {}\n", name));
             }
         }
 
