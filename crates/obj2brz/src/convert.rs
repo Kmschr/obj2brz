@@ -4,6 +4,7 @@ use crate::logger::Logger;
 use crate::octree;
 use crate::rampify;
 use crate::simplify::*;
+use crate::stl;
 use crate::voxelize::voxelize;
 
 use brdb::{Brick, Entity};
@@ -184,13 +185,18 @@ fn float_to_color_channel(value: f32) -> u8 {
     (value.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
-/// Validates OBJ file and checks for missing resources
+/// Validates the input model file and checks for missing resources. Only OBJ
+/// can reference external resources; other formats validate trivially.
 pub fn validate_obj_resources(obj_path: &str) -> ConversionResult<MissingResources> {
     let p = Path::new(obj_path);
 
-    // Check if OBJ file exists
+    // Check if the input file exists
     if !p.exists() {
         return Err(ConversionError::ObjFileNotFound { path: p.to_path_buf() });
+    }
+
+    if stl::is_stl_path(obj_path) {
+        return Ok(MissingResources::new());
     }
 
     let load_options = LoadOptions {
@@ -258,15 +264,23 @@ pub fn model_bounds(obj_path: &str) -> ConversionResult<ModelBounds> {
         });
     }
 
+    if stl::is_stl_path(obj_path) {
+        return bounds_from_models(&stl::load_stl(path)?);
+    }
+
     let (models, _) = tobj::load_obj(obj_path, &default_load_options())
         .map_err(|e| ConversionError::ObjParseError(e.to_string()))?;
 
     bounds_from_models(&models)
 }
 
-/// Measures triangle bounds from an in-memory OBJ. Used by the browser build,
-/// which has no filesystem path to read.
+/// Measures triangle bounds from an in-memory model (format detected from
+/// content). Used by the browser build, which has no filesystem path to read.
 pub fn model_bounds_from_bytes(obj_bytes: &[u8]) -> ConversionResult<ModelBounds> {
+    if stl::looks_like_stl(obj_bytes) {
+        return bounds_from_models(&stl::load_stl_bytes(obj_bytes)?);
+    }
+
     let mut reader = Cursor::new(obj_bytes);
     let (models, _) = tobj::load_obj_buf(&mut reader, &default_load_options(), no_materials)
         .map_err(|e| ConversionError::ObjParseError(e.to_string()))?;
@@ -457,6 +471,11 @@ fn load_models_and_materials(
 ) -> ConversionResult<(Vec<tobj::Model>, Vec<image::RgbaImage>)> {
     let p = Path::new(&opt.input_file_path);
 
+    if stl::is_stl_path(&opt.input_file_path) {
+        opt.logger.log("Importing STL model...".to_string());
+        return finish_untextured_models(stl::load_stl(p)?, opt);
+    }
+
     opt.logger.log("Importing model...".to_string());
     let load_options = LoadOptions {
         triangulate: true,
@@ -549,6 +568,32 @@ fn load_models_and_materials(
     Ok((models, material_images))
 }
 
+/// Finishes a load from a format that carries no materials (e.g. STL):
+/// pairs the geometry with the default white material and applies the same
+/// scaling pass the OBJ path uses.
+fn finish_untextured_models(
+    mut models: Vec<tobj::Model>,
+    opt: &ConvertOptions,
+) -> ConversionResult<(Vec<tobj::Model>, Vec<image::RgbaImage>)> {
+    if !models
+        .iter()
+        .any(|model| model.mesh.indices.len() >= 3 && model.mesh.positions.len() >= 3)
+    {
+        return Err(ConversionError::ObjParseError(
+            "model contains no triangle geometry to voxelize".to_string(),
+        ));
+    }
+
+    let material_images = vec![create_solid_color_texture([1.0, 1.0, 1.0], 1.0)];
+    scale_models(
+        &mut models,
+        opt.scale,
+        if opt.rampify { BrickType::Default } else { opt.bricktype },
+    );
+
+    Ok((models, material_images))
+}
+
 fn scale_models(models: &mut [tobj::Model], scale: f32, bricktype: BrickType) {
     // Determine model AABB to expand triangle octree to final size
     // Multiply y-coordinate by 2.5 to take into account plates
@@ -608,12 +653,18 @@ fn generate_octree(opt: &ConvertOptions, skip_textures: bool, material_filter: O
     Ok(voxelize_models(&mut models, &material_images, opt, material_filter))
 }
 
-/// Loads OBJ geometry straight from bytes for the browser build. Without the
-/// sibling `.mtl`/textures every face falls back to a default white material.
+/// Loads model geometry straight from bytes for the browser build; the
+/// format is detected from the content. Without the sibling `.mtl`/textures
+/// every OBJ face falls back to a default white material.
 fn load_models_from_buf(
     obj_bytes: &[u8],
     opt: &ConvertOptions,
 ) -> ConversionResult<(Vec<tobj::Model>, Vec<image::RgbaImage>)> {
+    if stl::looks_like_stl(obj_bytes) {
+        opt.logger.log("Importing STL model...".to_string());
+        return finish_untextured_models(stl::load_stl_bytes(obj_bytes)?, opt);
+    }
+
     let mut reader = Cursor::new(obj_bytes);
     let (mut models, _materials) =
         tobj::load_obj_buf(&mut reader, &default_load_options(), no_materials)

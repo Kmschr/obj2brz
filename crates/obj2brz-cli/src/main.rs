@@ -8,10 +8,12 @@ use obj2brz::{
 };
 
 const HELP: &str = "\
-obj2brz - convert OBJ models into Brickadia saves (BRZ/BRDB)
+obj2brz - convert 3D models into Brickadia saves (BRZ/BRDB)
+
+Supported inputs: Wavefront OBJ (.obj) and STL (.stl).
 
 USAGE:
-    obj2brz [OPTIONS] <input.obj>
+    obj2brz [OPTIONS] <input.obj|input.stl>
 
 OPTIONS:
     -o, --output-dir <DIR>       Output directory [default: .]
@@ -130,7 +132,7 @@ fn run() -> Result<(), String> {
         }
     }
 
-    let input = input.ok_or("missing required <input.obj> argument (see --help)")?;
+    let input = input.ok_or("missing required input model argument (see --help)")?;
     opts.input_file_path = input.clone();
 
     // Default save name to the input file stem.
