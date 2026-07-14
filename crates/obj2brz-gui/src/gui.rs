@@ -191,6 +191,12 @@ pub fn tools_sidebar(ctx: &Context) {
             );
             tool_link(
                 ui,
+                "mc2brz",
+                "https://mc2brz.kmschr.com/",
+                "Convert a Minecraft world to Brickadia.",
+            );
+            tool_link(
+                ui,
                 "WireScript",
                 "https://wirescript.brickadia.dev/",
                 "A compiled language for Brickadia logic gates.",
