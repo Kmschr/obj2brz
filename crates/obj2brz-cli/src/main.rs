@@ -14,7 +14,7 @@ Supported inputs: Wavefront OBJ (.obj), STL (.stl), glTF (.gltf/.glb),
 and FBX (.fbx).
 
 USAGE:
-    obj2brz [OPTIONS] <input.obj|input.stl>
+    obj2brz [OPTIONS] <input-model>
 
 OPTIONS:
     -o, --output-dir <DIR>       Output directory [default: .]

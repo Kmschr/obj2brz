@@ -26,6 +26,12 @@ const WINDOW_WIDTH: f32 = 1200.;
 #[cfg(not(target_arch = "wasm32"))]
 const WINDOW_HEIGHT: f32 = 860.;
 
+/// FBX is desktop-only: ufbx is a C library that can't target wasm32.
+#[cfg(not(target_arch = "wasm32"))]
+const SUPPORTED_FORMATS: &str = "OBJ, STL, FBX, glTF (.gltf / .glb)";
+#[cfg(target_arch = "wasm32")]
+const SUPPORTED_FORMATS: &str = "OBJ, STL, glTF (.gltf / .glb)";
+
 /// GUI application state. Wraps the UI-agnostic [`ConvertOptions`] with the
 /// transient widgets and channels the egui front-end needs.
 #[derive(Debug, Serialize, Deserialize)]
@@ -499,13 +505,19 @@ impl Obj2Brs {
     fn source_card(&mut self, ui: &mut Ui, input_file_valid: bool) {
         let file_color = gui::bool_color(ui, input_file_valid);
         ui.label(RichText::new("Model file").strong())
-            .on_hover_text("3D model to convert (currently OBJ)");
+            .on_hover_text("3D model to convert");
+        ui.add_space(2.0);
+        ui.label(
+            RichText::new(format!("Supported formats: {SUPPORTED_FORMATS}"))
+                .small()
+                .color(ui.visuals().weak_text_color()),
+        );
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.add(
                 TextEdit::singleline(&mut self.input_file_path)
                     .desired_width((ui.available_width() - 48.0).max(120.0))
-                    .hint_text("path/to/model.obj, .stl, .fbx")
+                    .hint_text("path/to/model.obj")
                     .text_color(file_color),
             );
             #[cfg(not(target_arch = "wasm32"))]
@@ -542,7 +554,7 @@ impl Obj2Brs {
                 ))
                 .strong())
                 .on_hover_text(
-                    "Based on the OBJ's triangle bounds and your current Scale, Brick Type, and Brick Scale. Voxelization can round the outer edge by up to one voxel.",
+                    "Based on the model's triangle bounds and your current Scale, Brick Type, and Brick Scale. Voxelization can round the outer edge by up to one voxel.",
                 );
             }
             Some(Err(error)) => {
