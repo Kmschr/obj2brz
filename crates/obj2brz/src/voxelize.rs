@@ -21,6 +21,7 @@ pub fn voxelize(
     _scale: f32,
     _bricktype: BrickType,
     material_filter: Option<usize>,
+    texture_alpha_cutout: bool,
 ) -> VoxelTree<Vector4<u8>> {
     let mut octree = VoxelTree::<Vector4<u8>>::new();
 
@@ -111,7 +112,13 @@ pub fn voxelize(
         }
     }
 
-    recursive_voxelize(&mut octree.contents, mask, triangles, materials);
+    recursive_voxelize(
+        &mut octree.contents,
+        mask,
+        triangles,
+        materials,
+        texture_alpha_cutout,
+    );
 
     octree
 }
@@ -121,6 +128,7 @@ fn recursive_voxelize(
     mask: isize,
     vector: Vec<Triangle>,
     materials: &[RgbaImage],
+    texture_alpha_cutout: bool,
 ) {
     let m = mask >> 1;
     let half_box = (2 * m + ((m == 0) as isize)) as f32 / 2.;
@@ -164,7 +172,7 @@ fn recursive_voxelize(
                                 let v = ((1. - uv[1] + uv[1].floor()) * height as f32) as u32;
 
                                 let c = *material.get_pixel(u, v);
-                                if c[3] == 0 {
+                                if texture_alpha_cutout && c[3] == 0 {
                                     continue;
                                 }
                                 colors.push(Vector4::<u8>::new(c[0], c[1], c[2], c[3]));
@@ -189,7 +197,7 @@ fn recursive_voxelize(
                 // Not yet at root level, keep on recursing...
                 *branch = TreeBody::Branch(Box::new(TreeBody::empty()));
                 if let TreeBody::Branch(b) = branch {
-                    recursive_voxelize(b, m, triangles, materials);
+                    recursive_voxelize(b, m, triangles, materials, texture_alpha_cutout);
                 }
             } else {
                 *branch = TreeBody::Leaf(average_rgba(&colors));

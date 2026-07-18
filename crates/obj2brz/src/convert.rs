@@ -49,6 +49,11 @@ pub struct ConvertOptions {
     pub save_name: String,
     pub scale: f32,
     pub simplify: bool,
+    /// Whether a fully transparent diffuse-texture pixel cuts away the
+    /// corresponding voxel. Disable this for source formats whose texture
+    /// alpha stores a shader mask rather than actual geometry transparency.
+    #[serde(default = "default_texture_alpha_cutout")]
+    pub texture_alpha_cutout: bool,
     #[serde(default)]
     pub rampify: bool,
     /// Rampify for terrain: only the upward-facing surface is smoothed with
@@ -85,6 +90,7 @@ impl Default for ConvertOptions {
             save_name: "test".into(),
             scale: 1.0,
             simplify: false,
+            texture_alpha_cutout: true,
             rampify: false,
             rampify_terrain: false,
             rampify_corners: true,
@@ -98,6 +104,10 @@ impl Default for ConvertOptions {
 }
 
 const fn default_player_collision() -> bool {
+    true
+}
+
+const fn default_texture_alpha_cutout() -> bool {
     true
 }
 
@@ -959,7 +969,14 @@ fn voxelize_models(
     } else {
         opts.logger.log("Voxelizing...".to_string());
     }
-    voxelize(models, material_images, opts.scale, opts.bricktype, material_filter)
+    voxelize(
+        models,
+        material_images,
+        opts.scale,
+        opts.bricktype,
+        material_filter,
+        opts.texture_alpha_cutout,
+    )
 }
 
 fn generate_octree(opt: &ConvertOptions, skip_textures: bool, material_filter: Option<usize>) -> ConversionResult<octree::VoxelTree<Vector4<u8>>> {
