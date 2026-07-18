@@ -55,6 +55,28 @@ impl Vox {
     }
 }
 
+fn next_rotation(rotation: Rotation) -> Rotation {
+    match rotation {
+        Rotation::Deg0 => Rotation::Deg90,
+        Rotation::Deg90 => Rotation::Deg180,
+        Rotation::Deg180 => Rotation::Deg270,
+        Rotation::Deg270 => Rotation::Deg0,
+    }
+}
+
+/// `Direction::ZNegative` mirrors a brick across the world X axis, so a
+/// ceiling brick's stored rotation is the reflection of its voxel-space
+/// rotation. This is the corner-brick generalization of the Deg0/Deg180 swap
+/// `create_ramp` applies to plain ramps.
+fn mirrored_rotation(rotation: Rotation) -> Rotation {
+    match rotation {
+        Rotation::Deg0 => Rotation::Deg90,
+        Rotation::Deg90 => Rotation::Deg0,
+        Rotation::Deg180 => Rotation::Deg270,
+        Rotation::Deg270 => Rotation::Deg180,
+    }
+}
+
 struct Rampifier {
     size: (usize, usize, usize),
     /// RGB values are stored as packed RGB + 1. Zero is air, which keeps the
@@ -240,6 +262,197 @@ impl Rampifier {
         }
         rise += add_one;
         (rise > 1).then_some((run as usize + 1, rise as usize - 1))
+    }
+
+    /// Fits a corner ramp whose two high walls face `rotation` and
+    /// `rotation + 90`, with `position` as the low outer corner. Returns the
+    /// runs along each wall axis and the rise. Corner ramps only fit where a
+    /// straight ramp fits along both perpendicular edges and the footprint
+    /// between them is clear, so straight edges never match.
+    ///
+    /// An outer corner (convex contour turn) has open cells behind both wall
+    /// axes and rising terrain only past the far diagonal. An inner corner
+    /// (concave turn) sits where the edge wraps the other way: the cells
+    /// behind it are still part of the edge, only the diagonal between them is
+    /// open, and the terrain rises along the whole far row and column.
+    fn fit_corner(
+        &self,
+        position: Vox,
+        rotation: Rotation,
+        floor: bool,
+        inner: bool,
+    ) -> Option<(usize, usize, usize)> {
+        let up = if floor { Vox(0, 0, 1) } else { Vox(0, 0, -1) };
+        let forward_a = Vox::forward(rotation);
+        let forward_b = Vox::forward(next_rotation(rotation));
+        if self.exists(position + up) {
+            return None;
+        }
+        let corner_shaped = if inner {
+            self.exists(position - forward_a)
+                && self.exists(position - forward_b)
+                && !self.exists(position - forward_a - forward_b)
+        } else {
+            !self.exists(position - forward_a) && !self.exists(position - forward_b)
+        };
+        if !corner_shaped {
+            return None;
+        }
+        let (run_a, rise_a) = self.fit_ramp(position, rotation, floor)?;
+        let (run_b, rise_b) = self.fit_ramp(position, next_rotation(rotation), floor)?;
+        // The two edge fits rarely agree exactly on rough terrain; the lower
+        // rise still produces a corner that meets both neighbouring slopes.
+        let rise = rise_a.min(rise_b);
+        // An outer corner surface is the intersection of the two straight
+        // ramps, so it only reaches full height at the far diagonal cell; an
+        // inner corner is their union and is full height along the whole
+        // far row and column. Those full-height cells may hold the rising
+        // terrain (like a straight fit's last column); everywhere else the
+        // footprint must be flat with air above.
+        let clear = |cells_a: usize, cells_b: usize| {
+            for i in 0..cells_a as isize {
+                for j in 0..cells_b as isize {
+                    let cell = position + forward_a * i + forward_b * j;
+                    if !self.exists(cell) || self.is_ramp(cell) {
+                        return false;
+                    }
+                    let on_far_a = i == cells_a as isize - 1;
+                    let on_far_b = j == cells_b as isize - 1;
+                    let full_height = if inner {
+                        on_far_a || on_far_b
+                    } else {
+                        on_far_a && on_far_b
+                    };
+                    if !full_height && self.exists(cell + up) {
+                        return false;
+                    }
+                }
+            }
+            true
+        };
+        // The full-run footprint is often obstructed on rough terrain, so fall
+        // back to the largest clear rectangle that still fits a corner (2x2).
+        let mut best: Option<(usize, usize)> = None;
+        for cells_a in 2..=run_a {
+            for cells_b in 2..=run_b {
+                if best.is_none_or(|(a, b)| cells_a * cells_b > a * b) && clear(cells_a, cells_b) {
+                    best = Some((cells_a, cells_b));
+                }
+            }
+        }
+        best.map(|(cells_a, cells_b)| (cells_a, cells_b, rise))
+    }
+
+    fn create_corner(
+        &mut self,
+        position: Vox,
+        (run_a, run_b, rise): (usize, usize, usize),
+        inner: bool,
+        rotation: Rotation,
+        floor: bool,
+        opts: &ConvertOptions,
+    ) -> Brick {
+        let position = if floor {
+            position
+        } else {
+            position - Vox(0, 0, rise as isize - 1)
+        };
+        let forward_a = Vox::forward(rotation);
+        let forward_b = Vox::forward(next_rotation(rotation));
+
+        let mut colors = HashMap::<u32, usize>::new();
+        for i in 0..run_a as isize {
+            for j in 0..run_b as isize {
+                for z in 0..rise as isize {
+                    let voxel = position + forward_a * i + forward_b * j + Vox(0, 0, 1) * z;
+                    if let Some(index) = self.index(voxel) {
+                        self.occupied_by_ramps.insert(index);
+                        let color = self.grid[index];
+                        if color != 0 {
+                            *colors.entry(color).or_default() += 1;
+                        }
+                    }
+                }
+            }
+        }
+        let color = colors
+            .into_iter()
+            .max_by_key(|(_, count)| *count)
+            .map(|(color, _)| color)
+            .expect("corner ramp has occupied voxels");
+
+        let global = position + self.origin;
+        let far = global + forward_a * (run_a as isize - 1) + forward_b * (run_b as isize - 1);
+        let min_x = global.0.min(far.0);
+        let min_y = global.1.min(far.1);
+        let (x_cells, y_cells) = if forward_a.0 != 0 {
+            (run_a, run_b)
+        } else {
+            (run_b, run_a)
+        };
+        // Local X follows the first wall axis on floors; the ZNegative mirror
+        // swaps the wall axes, so ceiling corners store swapped extents.
+        let size = if floor {
+            BrickSize::new((run_a * 5) as u16, (run_b * 5) as u16, (rise * 2) as u16)
+        } else {
+            BrickSize::new((run_b * 5) as u16, (run_a * 5) as u16, (rise * 2) as u16)
+        };
+        brick(
+            if inner {
+                "PB_DefaultRampInnerCorner"
+            } else {
+                "PB_DefaultRampCorner"
+            },
+            size,
+            Position {
+                x: (min_x * 10) as i32 + x_cells as i32 * 5,
+                y: (min_y * 10) as i32 + y_cells as i32 * 5,
+                z: global.2 as i32 * 4 + size.z as i32,
+            },
+            unpack_color(color),
+            if floor {
+                Direction::ZPositive
+            } else {
+                Direction::ZNegative
+            },
+            if floor { rotation } else { mirrored_rotation(rotation) },
+            opts,
+        )
+    }
+
+    fn generate_corners(&mut self, floor: bool, opts: &ConvertOptions, output: &mut Vec<Brick>) {
+        const ROTATIONS: [Rotation; 4] = [
+            Rotation::Deg0,
+            Rotation::Deg90,
+            Rotation::Deg180,
+            Rotation::Deg270,
+        ];
+        for scan_z in 0..self.size.2 as isize {
+            let z = if floor {
+                scan_z
+            } else {
+                self.size.2 as isize - 1 - scan_z
+            };
+            for y in 0..self.size.1 as isize {
+                for x in 0..self.size.0 as isize {
+                    let position = Vox(x, y, z);
+                    if !self.exists(position) || self.is_ramp(position) {
+                        continue;
+                    }
+                    'placed: for rotation in ROTATIONS {
+                        for inner in [false, true] {
+                            if let Some(fit) = self.fit_corner(position, rotation, floor, inner)
+                            {
+                                output.push(self.create_corner(
+                                    position, fit, inner, rotation, floor, opts,
+                                ));
+                                break 'placed;
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn create_ramp(
@@ -506,8 +719,20 @@ pub fn rampify(
         "Rampifying {} voxel cells directly from the octree...",
         rampifier.grid.len()
     ));
+    // Corners run first: straight ramps along the edges next to a convex
+    // corner would otherwise consume the corner's footprint cells.
+    if opts.rampify_corners {
+        rampifier.generate_corners(true, opts, &mut save.bricks);
+    }
     rampifier.generate_ramps(true, opts, &mut save.bricks);
-    rampifier.generate_ramps(false, opts, &mut save.bricks);
+    // Terrain mode only smooths upward-facing surfaces; undersides are left
+    // for fill_gaps, which emits plain upright bricks.
+    if !opts.rampify_terrain {
+        if opts.rampify_corners {
+            rampifier.generate_corners(false, opts, &mut save.bricks);
+        }
+        rampifier.generate_ramps(false, opts, &mut save.bricks);
+    }
     rampifier.fill_gaps(opts, &mut save.bricks);
     opts.logger
         .log(format!("Rampify generated {} bricks", save.bricks.len()));
@@ -588,11 +813,145 @@ mod tests {
             author_name: String::new(),
         };
         rampify(&tree, &mut save, &ConvertOptions::default()).unwrap();
+        assert!(save.bricks.iter().any(|brick| {
+            matches!(
+                brick.asset.asset().as_ref(),
+                "PB_DefaultRamp" | "PB_DefaultRampCorner"
+            )
+        }));
+        assert!(save.bricks.len() < 6);
+    }
+
+    #[test]
+    fn places_corner_ramps_on_convex_plateau_corners() {
+        // A 6x6 ground plane with a 3x3 plateau in one corner. The plateau's
+        // exposed top corner should become a PB_DefaultRampCorner whose two
+        // walls face the plateau interior.
+        let mut tree = VoxelTree::new();
+        for x in 0..6 {
+            for depth in 0..6 {
+                *tree.get_mut_or_create(cgmath::Vector3::new(x, 0, depth)) =
+                    TreeBody::Leaf(Vector4::new(1, 2, 3, 255));
+            }
+        }
+        for x in 0..3 {
+            for depth in 0..3 {
+                *tree.get_mut_or_create(cgmath::Vector3::new(x, 1, depth)) =
+                    TreeBody::Leaf(Vector4::new(1, 2, 3, 255));
+            }
+        }
+        let mut save = SaveData {
+            bricks: Vec::new(),
+            author_name: String::new(),
+        };
+        rampify(&tree, &mut save, &ConvertOptions::default()).unwrap();
+        let corner = save
+            .bricks
+            .iter()
+            .find(|brick| brick.asset.asset().as_ref() == "PB_DefaultRampCorner")
+            .expect("plateau corner should produce a corner ramp");
+        assert!(matches!(corner.direction, Direction::ZPositive));
+    }
+
+    #[test]
+    fn places_inverted_corner_ramps_on_concave_plateau_corners() {
+        // A 12x12 ground plane with an L-shaped plateau leaving a lower bay in
+        // one quadrant. The world is large enough that the convex bevels at
+        // the plateau's outer corners (max run 4) cannot reach the concave
+        // turn, which should become a PB_DefaultRampInnerCorner.
+        let mut tree = VoxelTree::new();
+        for x in 0..12 {
+            for depth in 0..12 {
+                *tree.get_mut_or_create(cgmath::Vector3::new(x, 0, depth)) =
+                    TreeBody::Leaf(Vector4::new(1, 2, 3, 255));
+                if x < 6 || depth < 6 {
+                    *tree.get_mut_or_create(cgmath::Vector3::new(x, 1, depth)) =
+                        TreeBody::Leaf(Vector4::new(1, 2, 3, 255));
+                }
+            }
+        }
+        let mut save = SaveData {
+            bricks: Vec::new(),
+            author_name: String::new(),
+        };
+        rampify(&tree, &mut save, &ConvertOptions::default()).unwrap();
+        let corner = save
+            .bricks
+            .iter()
+            .find(|brick| brick.asset.asset().as_ref() == "PB_DefaultRampInnerCorner")
+            .expect("concave plateau corner should produce an inner corner ramp");
+        assert!(matches!(corner.direction, Direction::ZPositive));
+    }
+
+    #[test]
+    fn corner_ramps_can_be_disabled() {
+        let mut tree = VoxelTree::new();
+        for x in 0..6 {
+            for depth in 0..6 {
+                *tree.get_mut_or_create(cgmath::Vector3::new(x, 0, depth)) =
+                    TreeBody::Leaf(Vector4::new(1, 2, 3, 255));
+                if x < 3 && depth < 3 {
+                    *tree.get_mut_or_create(cgmath::Vector3::new(x, 1, depth)) =
+                        TreeBody::Leaf(Vector4::new(1, 2, 3, 255));
+                }
+            }
+        }
+        let mut save = SaveData {
+            bricks: Vec::new(),
+            author_name: String::new(),
+        };
+        let opts = ConvertOptions {
+            rampify_corners: false,
+            ..ConvertOptions::default()
+        };
+        rampify(&tree, &mut save, &opts).unwrap();
+        assert!(!save.bricks.is_empty());
+        assert!(!save.bricks.iter().any(|brick| {
+            matches!(
+                brick.asset.asset().as_ref(),
+                "PB_DefaultRampCorner" | "PB_DefaultRampInnerCorner"
+            )
+        }));
+    }
+
+    #[test]
+    fn terrain_mode_never_orients_bricks_downward() {
+        // A floating 4x4x2 slab has an exposed underside that would normally
+        // receive upside-down (ZNegative) ramps.
+        let mut tree = VoxelTree::new();
+        for x in 0..4 {
+            for depth in 0..4 {
+                for height in 2..4 {
+                    *tree.get_mut_or_create(cgmath::Vector3::new(x, height, depth)) =
+                        TreeBody::Leaf(Vector4::new(1, 2, 3, 255));
+                }
+            }
+        }
+        let mut save = SaveData {
+            bricks: Vec::new(),
+            author_name: String::new(),
+        };
+        let opts = ConvertOptions {
+            rampify: true,
+            rampify_terrain: true,
+            ..ConvertOptions::default()
+        };
+        rampify(&tree, &mut save, &opts).unwrap();
+        assert!(!save.bricks.is_empty());
         assert!(save
             .bricks
             .iter()
-            .any(|brick| brick.asset.asset().as_ref() == "PB_DefaultRamp"));
-        assert!(save.bricks.len() < 6);
+            .all(|brick| matches!(brick.direction, Direction::ZPositive)));
+
+        let mut normal = SaveData {
+            bricks: Vec::new(),
+            author_name: String::new(),
+        };
+        rampify(&tree, &mut normal, &ConvertOptions::default()).unwrap();
+        assert!(normal
+            .bricks
+            .iter()
+            .any(|brick| matches!(brick.direction, Direction::ZNegative)));
     }
 
     #[test]

@@ -51,6 +51,14 @@ pub struct ConvertOptions {
     pub simplify: bool,
     #[serde(default)]
     pub rampify: bool,
+    /// Rampify for terrain: only the upward-facing surface is smoothed with
+    /// ramps; undersides become plain upright bricks instead of inverted ramps.
+    #[serde(default)]
+    pub rampify_terrain: bool,
+    /// Whether rampify may place corner ramp bricks (outer and inner) where
+    /// two perpendicular slopes meet.
+    #[serde(default = "default_rampify_corners")]
+    pub rampify_corners: bool,
     pub split_by_material: bool,
     pub grid_offset_x: f32,
     pub grid_offset_y: f32,
@@ -78,6 +86,8 @@ impl Default for ConvertOptions {
             scale: 1.0,
             simplify: false,
             rampify: false,
+            rampify_terrain: false,
+            rampify_corners: true,
             split_by_material: false,
             grid_offset_x: 0.0,
             grid_offset_y: 0.0,
@@ -88,6 +98,10 @@ impl Default for ConvertOptions {
 }
 
 const fn default_player_collision() -> bool {
+    true
+}
+
+const fn default_rampify_corners() -> bool {
     true
 }
 

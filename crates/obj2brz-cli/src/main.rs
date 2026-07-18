@@ -29,6 +29,9 @@ OPTIONS:
         --brick-scale <N>        Microbrick size multiplier [default: 1]
         --simplify               Lossy merge of similar bricks
         --rampify                Generate default ramps directly from voxels
+        --rampify-terrain        Rampify for terrain: only smooth top surfaces,
+                                 undersides become plain bricks (implies --rampify)
+        --no-corner-ramps        Rampify with straight ramps and wedges only
         --split-by-material      One frozen grid per OBJ material
         --grid-offset <X> <Y> <Z>  Spacing between material grids [default: 0 0 0]
         --owner-id <UUID>        Brick owner id
@@ -112,6 +115,11 @@ fn run() -> Result<(), String> {
             }
             Long("simplify") => opts.simplify = true,
             Long("rampify") => opts.rampify = true,
+            Long("rampify-terrain") => {
+                opts.rampify = true;
+                opts.rampify_terrain = true;
+            }
+            Long("no-corner-ramps") => opts.rampify_corners = false,
             Long("split-by-material") => opts.split_by_material = true,
             Long("grid-offset") => {
                 opts.grid_offset_x = parser.value().map_err(|e| e.to_string())?.parse().map_err(|e| e.to_string())?;

@@ -65,6 +65,10 @@ pub struct Obj2Brs {
     simplify: bool,
     #[serde(default)]
     rampify: bool,
+    #[serde(default)]
+    rampify_terrain: bool,
+    #[serde(default = "default_rampify_corners")]
+    rampify_corners: bool,
     split_by_material: bool,
     grid_offset_x: f32,
     grid_offset_y: f32,
@@ -93,6 +97,10 @@ pub struct Obj2Brs {
 }
 
 fn default_dark_mode() -> bool {
+    true
+}
+
+fn default_rampify_corners() -> bool {
     true
 }
 
@@ -133,6 +141,8 @@ impl Default for Obj2Brs {
             scale: 1.0,
             simplify: false,
             rampify: false,
+            rampify_terrain: false,
+            rampify_corners: true,
             split_by_material: false,
             grid_offset_x: 0.0,
             grid_offset_y: 0.0,
@@ -171,6 +181,8 @@ impl Obj2Brs {
             scale: self.scale,
             simplify: self.simplify,
             rampify: self.rampify,
+            rampify_terrain: self.rampify_terrain,
+            rampify_corners: self.rampify_corners,
             split_by_material: self.split_by_material,
             grid_offset_x: self.grid_offset_x,
             grid_offset_y: self.grid_offset_y,
@@ -720,6 +732,24 @@ impl Obj2Brs {
                 "Replace exposed voxels with default ramps and wedges. Runs directly on the voxel octree, without creating one plate brick per voxel.",
             );
             ui.add(Checkbox::new(&mut self.rampify, "Smooth slopes"));
+            ui.end_row();
+
+            ui.label("Terrain").on_hover_text(
+                "Only smooth upward-facing surfaces; undersides become plain bricks instead of inverted ramps",
+            );
+            ui.add_enabled(
+                self.rampify,
+                Checkbox::new(&mut self.rampify_terrain, "Top surfaces only"),
+            );
+            ui.end_row();
+
+            ui.label("Corner ramps").on_hover_text(
+                "Place corner ramp bricks (outer and inner) where two perpendicular slopes meet",
+            );
+            ui.add_enabled(
+                self.rampify,
+                Checkbox::new(&mut self.rampify_corners, "Smooth corners"),
+            );
             ui.end_row();
         });
     }
