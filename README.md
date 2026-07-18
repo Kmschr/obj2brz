@@ -8,14 +8,7 @@ a5 adaptation of [textured-voxelizer](https://github.com/CheezBarger/textured-vo
 
 Generates textured voxel models from OBJ, STL, glTF/GLB, and FBX files
 (FBX on desktop/CLI only; the browser build cannot run the C-based FBX
-parser), plus LDraw models (`.dat`, `.ldr`, `.mpd`).
-
-LDraw part references resolve against the model's own directory and an
-installed [LDraw parts library](https://library.ldraw.org/)
-(`LDRAWDIR`, `~/.ldraw`, or `/usr/share/ldraw`); colours come from the
-library's `LDConfig.ldr` when present, falling back to a built-in table.
-LDraw models always convert at true scale — 1 LEGO stud = 1 Brickadia stud
-(10 units) — so the scale option does not apply to them.
+parser).
 
 ## Workspace layout
 
@@ -55,7 +48,6 @@ writable filesystem path.
 ```sh
 obj2brz model.obj -o builds -n my_save --scale 2 --simplify
 obj2brz model.obj --material hologram --no-player-collision
-obj2brz castle.ldr             # LDraw always converts at 1 stud = 1 stud
 obj2brz --help
 ```
 

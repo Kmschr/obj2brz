@@ -28,9 +28,9 @@ const WINDOW_HEIGHT: f32 = 860.;
 
 /// FBX is desktop-only: ufbx is a C library that can't target wasm32.
 #[cfg(not(target_arch = "wasm32"))]
-const SUPPORTED_FORMATS: &str = "OBJ, STL, FBX, glTF (.gltf / .glb), LDraw (.dat / .ldr / .mpd)";
+const SUPPORTED_FORMATS: &str = "OBJ, STL, FBX, glTF (.gltf / .glb)";
 #[cfg(target_arch = "wasm32")]
-const SUPPORTED_FORMATS: &str = "OBJ, STL, glTF (.gltf / .glb), LDraw (.dat / .ldr / .mpd)";
+const SUPPORTED_FORMATS: &str = "OBJ, STL, glTF (.gltf / .glb)";
 
 /// GUI application state. Wraps the UI-agnostic [`ConvertOptions`] with the
 /// transient widgets and channels the egui front-end needs.
@@ -326,7 +326,7 @@ impl Obj2Brs {
         self.web_file_receiver = Some(rx);
         wasm_bindgen_futures::spawn_local(async move {
             if let Some(handle) = rfd::AsyncFileDialog::new()
-                .add_filter("3D Model", &["obj", "stl", "gltf", "glb", "dat", "ldr", "mpd"])
+                .add_filter("3D Model", &["obj", "stl", "gltf", "glb"])
                 .pick_file()
                 .await
             {
@@ -517,7 +517,7 @@ impl Obj2Brs {
             ui.add(
                 TextEdit::singleline(&mut self.input_file_path)
                     .desired_width((ui.available_width() - 48.0).max(120.0))
-                    .hint_text("path/to/model.obj or .dat")
+                    .hint_text("path/to/model.obj")
                     .text_color(file_color),
             );
             #[cfg(not(target_arch = "wasm32"))]
@@ -526,10 +526,7 @@ impl Obj2Brs {
                 self.input_file_path_receiver = Some(rx);
                 thread::spawn(move || {
                     let obj_path = FileDialog::new()
-                        .add_filter(
-                            "3D Model",
-                            &["obj", "stl", "fbx", "gltf", "glb", "dat", "ldr", "mpd"],
-                        )
+                        .add_filter("3D Model", &["obj", "stl", "fbx", "gltf", "glb"])
                         .pick_file();
                     let _ = tx.send(obj_path);
                 });

@@ -11,9 +11,7 @@ const HELP: &str = "\
 obj2brz - convert 3D models into Brickadia saves (BRZ/BRDB)
 
 Supported inputs: Wavefront OBJ (.obj), STL (.stl), glTF (.gltf/.glb),
-FBX (.fbx), and LDraw (.dat, .ldr, .mpd). LDraw part references resolve
-against the model's directory and an installed LDraw parts library
-(LDRAWDIR, ~/.ldraw, /usr/share/ldraw).
+and FBX (.fbx).
 
 USAGE:
     obj2brz [OPTIONS] <input-model>
@@ -28,8 +26,6 @@ OPTIONS:
         --no-player-collision     Do not block players
         --no-physics-collision    Do not collide with physics or brick grids
         --scale <F>              Overall scale multiplier [default: 1.0]
-                                 (ignored for LDraw input, which always converts
-                                 at true scale: 1 LEGO stud = 1 Brickadia stud)
         --brick-scale <N>        Microbrick size multiplier [default: 1]
         --simplify               Lossy merge of similar bricks
         --rampify                Generate default ramps directly from voxels
