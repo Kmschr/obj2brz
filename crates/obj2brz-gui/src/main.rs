@@ -65,8 +65,6 @@ pub struct Obj2Brs {
     simplify: bool,
     #[serde(default)]
     posterize: bool,
-    #[serde(default = "default_texture_alpha_cutout")]
-    texture_alpha_cutout: bool,
     #[serde(default)]
     rampify: bool,
     #[serde(default)]
@@ -108,10 +106,6 @@ fn default_rampify_corners() -> bool {
     true
 }
 
-fn default_texture_alpha_cutout() -> bool {
-    true
-}
-
 fn default_player_collision() -> bool {
     true
 }
@@ -149,7 +143,6 @@ impl Default for Obj2Brs {
             scale: 1.0,
             simplify: false,
             posterize: false,
-            texture_alpha_cutout: true,
             rampify: false,
             rampify_terrain: false,
             rampify_corners: true,
@@ -192,7 +185,6 @@ impl Obj2Brs {
             simplify: self.simplify,
             squarish: false,
             posterize: self.posterize,
-            texture_alpha_cutout: self.texture_alpha_cutout,
             rampify: self.rampify,
             rampify_terrain: self.rampify_terrain,
             rampify_corners: self.rampify_corners,
@@ -772,16 +764,6 @@ impl Obj2Brs {
         ui.add(Slider::new(
             &mut self.material_intensity,
             std::ops::RangeInclusive::new(0, 10),
-        ));
-        ui.end_row();
-
-        ui.label("Texture Alpha Cutout").on_hover_text(
-            "Fully transparent texture pixels remove the voxel. Disable when \
-             texture alpha is a shader mask rather than real transparency.",
-        );
-        ui.add(Checkbox::new(
-            &mut self.texture_alpha_cutout,
-            "Cut away transparent pixels",
         ));
         ui.end_row();
 

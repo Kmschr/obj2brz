@@ -21,7 +21,6 @@ pub fn voxelize(
     _scale: f32,
     _bricktype: BrickType,
     material_filter: Option<usize>,
-    texture_alpha_cutout: bool,
 ) -> VoxelTree<Vector4<u8>> {
     let mut octree = VoxelTree::<Vector4<u8>>::new();
 
@@ -112,13 +111,7 @@ pub fn voxelize(
         }
     }
 
-    recursive_voxelize(
-        &mut octree.contents,
-        mask,
-        triangles,
-        materials,
-        texture_alpha_cutout,
-    );
+    recursive_voxelize(&mut octree.contents, mask, triangles, materials);
 
     octree
 }
@@ -128,7 +121,6 @@ fn recursive_voxelize(
     mask: isize,
     vector: Vec<Triangle>,
     materials: &[RgbaImage],
-    texture_alpha_cutout: bool,
 ) {
     let m = mask >> 1;
     let half_box = (2 * m + ((m == 0) as isize)) as f32 / 2.;
@@ -172,9 +164,6 @@ fn recursive_voxelize(
                                 let v = ((1. - uv[1] + uv[1].floor()) * height as f32) as u32;
 
                                 let c = *material.get_pixel(u, v);
-                                if texture_alpha_cutout && c[3] == 0 {
-                                    continue;
-                                }
                                 colors.push(Vector4::<u8>::new(c[0], c[1], c[2], c[3]));
                             }
                         }
@@ -197,31 +186,99 @@ fn recursive_voxelize(
                 // Not yet at root level, keep on recursing...
                 *branch = TreeBody::Branch(Box::new(TreeBody::empty()));
                 if let TreeBody::Branch(b) = branch {
-                    recursive_voxelize(b, m, triangles, materials, texture_alpha_cutout);
+                    recursive_voxelize(b, m, triangles, materials);
                 }
-            } else {
-                *branch = TreeBody::Leaf(average_rgba(&colors));
+            } else if let Some(color) = resolve_surface_color(&colors) {
+                *branch = TreeBody::Leaf(color);
             }
         }
     }
 }
 
-fn average_rgba(colors: &[Vector4<u8>]) -> Vector4<u8> {
+/// Resolves every texture sample that landed in a voxel into the single color
+/// the surface actually presents, or `None` when nothing visible is there.
+///
+/// RGB is averaged weighted by alpha, so a transparent decal sheet stacked over
+/// a solid surface resolves to the solid color instead of being dragged toward
+/// the sheet's undefined transparent RGB. Alpha is a plain mean: a voxel whose
+/// samples are all fully transparent has no visible surface and is cut away,
+/// but a genuinely translucent surface survives with its translucency intact.
+fn resolve_surface_color(colors: &[Vector4<u8>]) -> Option<Vector4<u8>> {
     if colors.is_empty() {
-        return Vector4::new(255, 255, 255, 255);
+        return Some(Vector4::new(255, 255, 255, 255));
     }
 
-    let sums = colors.iter().fold([0_u32; 4], |mut sums, color| {
-        for (index, sum) in sums.iter_mut().enumerate() {
-            *sum += u32::from(color[index]);
+    let mut rgb_sums = [0_u32; 3];
+    let mut alpha_sum = 0_u32;
+    for color in colors {
+        let alpha = u32::from(color[3]);
+        alpha_sum += alpha;
+        for (index, sum) in rgb_sums.iter_mut().enumerate() {
+            *sum += u32::from(color[index]) * alpha;
         }
-        sums
-    });
+    }
+
+    if alpha_sum == 0 {
+        return None;
+    }
+
     let count = colors.len() as u32;
-    Vector4::new(
-        ((sums[0] + count / 2) / count) as u8,
-        ((sums[1] + count / 2) / count) as u8,
-        ((sums[2] + count / 2) / count) as u8,
-        ((sums[3] + count / 2) / count) as u8,
-    )
+    Some(Vector4::new(
+        ((rgb_sums[0] + alpha_sum / 2) / alpha_sum) as u8,
+        ((rgb_sums[1] + alpha_sum / 2) / alpha_sum) as u8,
+        ((rgb_sums[2] + alpha_sum / 2) / alpha_sum) as u8,
+        ((alpha_sum + count / 2) / count) as u8,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transparent_samples_do_not_tint_the_surface() {
+        // A transparent decal pixel whose RGB is undefined garbage, over a
+        // solid green surface: the result is the green, unshifted.
+        let color = resolve_surface_color(&[
+            Vector4::new(255, 0, 255, 0),
+            Vector4::new(0, 200, 0, 255),
+        ])
+        .unwrap();
+
+        assert_eq!(color[0], 0);
+        assert_eq!(color[1], 200);
+        assert_eq!(color[2], 0);
+    }
+
+    #[test]
+    fn fully_transparent_voxels_are_cut_away() {
+        assert!(resolve_surface_color(&[
+            Vector4::new(255, 0, 255, 0),
+            Vector4::new(10, 10, 10, 0),
+        ])
+        .is_none());
+    }
+
+    #[test]
+    fn translucent_surfaces_survive_with_their_alpha() {
+        let color = resolve_surface_color(&[
+            Vector4::new(0, 0, 255, 60),
+            Vector4::new(0, 0, 255, 60),
+        ])
+        .unwrap();
+
+        assert_eq!(color[2], 255);
+        assert_eq!(color[3], 60);
+    }
+
+    #[test]
+    fn opaque_samples_average_as_before() {
+        let color = resolve_surface_color(&[
+            Vector4::new(0, 0, 0, 255),
+            Vector4::new(100, 100, 100, 255),
+        ])
+        .unwrap();
+
+        assert_eq!(color, Vector4::new(50, 50, 50, 255));
+    }
 }

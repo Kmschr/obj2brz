@@ -61,11 +61,6 @@ pub struct ConvertOptions {
     /// bricks, without the hue shift a fixed color grid causes.
     #[serde(default)]
     pub posterize: bool,
-    /// Whether a fully transparent diffuse-texture pixel cuts away the
-    /// corresponding voxel. Disable this for source formats whose texture
-    /// alpha stores a shader mask rather than actual geometry transparency.
-    #[serde(default = "default_texture_alpha_cutout")]
-    pub texture_alpha_cutout: bool,
     #[serde(default)]
     pub rampify: bool,
     /// Rampify for terrain: only the upward-facing surface is smoothed with
@@ -104,7 +99,6 @@ impl Default for ConvertOptions {
             simplify: false,
             squarish: false,
             posterize: false,
-            texture_alpha_cutout: true,
             rampify: false,
             rampify_terrain: false,
             rampify_corners: true,
@@ -118,10 +112,6 @@ impl Default for ConvertOptions {
 }
 
 const fn default_player_collision() -> bool {
-    true
-}
-
-const fn default_texture_alpha_cutout() -> bool {
     true
 }
 
@@ -1262,7 +1252,6 @@ fn voxelize_models(
         opts.scale,
         opts.bricktype,
         material_filter,
-        opts.texture_alpha_cutout,
     )
 }
 
