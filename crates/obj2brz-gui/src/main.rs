@@ -187,6 +187,7 @@ impl Obj2Brs {
             save_name: self.save_name.clone(),
             scale: self.scale,
             simplify: self.simplify,
+            squarish: false,
             texture_alpha_cutout: self.texture_alpha_cutout,
             rampify: self.rampify,
             rampify_terrain: self.rampify_terrain,

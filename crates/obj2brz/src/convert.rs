@@ -49,6 +49,11 @@ pub struct ConvertOptions {
     pub save_name: String,
     pub scale: f32,
     pub simplify: bool,
+    /// Use the racegen-style interior-seeded "squarish" packer instead of the
+    /// Morton-order greedy merge. Produces blockier bricks and fewer seams on
+    /// curved shells. Applies to both lossy (`simplify`) and lossless passes.
+    #[serde(default)]
+    pub squarish: bool,
     /// Whether a fully transparent diffuse-texture pixel cuts away the
     /// corresponding voxel. Disable this for source formats whose texture
     /// alpha stores a shader mask rather than actual geometry transparency.
@@ -90,6 +95,7 @@ impl Default for ConvertOptions {
             save_name: "test".into(),
             scale: 1.0,
             simplify: false,
+            squarish: false,
             texture_alpha_cutout: true,
             rampify: false,
             rampify_terrain: false,
@@ -635,6 +641,8 @@ pub fn convert(opts: &ConvertOptions, skip_textures: bool) -> ConversionResult<(
             opts.logger.log(format!("Processing material {}...", mat_id));
             if opts.rampify {
                 rampify::rampify(&octree, &mut save_data, opts)?;
+            } else if opts.squarish {
+                simplify_squarish(&octree, &mut save_data, opts, max_merge, opts.simplify);
             } else if opts.simplify {
                 simplify_lossy(&mut octree, &mut save_data, opts, max_merge);
             } else {
@@ -1072,6 +1080,8 @@ fn octree_to_save_data(
 
     if opts.rampify {
         rampify::rampify(octree, &mut save_data, opts)?;
+    } else if opts.squarish {
+        simplify_squarish(octree, &mut save_data, opts, max_merge, opts.simplify);
     } else if opts.simplify {
         simplify_lossy(octree, &mut save_data, opts, max_merge);
     } else {
