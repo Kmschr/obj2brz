@@ -49,11 +49,10 @@ pub struct ConvertOptions {
     pub save_name: String,
     pub scale: f32,
     pub simplify: bool,
-    /// Use the racegen-style interior-seeded "squarish" packer instead of the
-    /// Morton-order greedy merge. Produces blockier bricks and fewer seams on
-    /// curved shells. Applies to both lossy (`simplify`) and lossless passes.
+    /// Which packer turns voxels into bricks. Applies to both the lossy
+    /// (`simplify`) and lossless passes.
     #[serde(default)]
-    pub squarish: bool,
+    pub merge_algorithm: MergeAlgorithm,
     /// Flatten each diffuse texture to the colors it actually needs: the
     /// palette size is detected per texture, so a mostly-gray texture ends up
     /// gray while a red texture with yellow stripes keeps both. Fewer distinct
@@ -97,7 +96,7 @@ impl Default for ConvertOptions {
             save_name: "test".into(),
             scale: 1.0,
             simplify: false,
-            squarish: false,
+            merge_algorithm: MergeAlgorithm::default(),
             posterize: false,
             rampify: false,
             rampify_terrain: false,
@@ -121,6 +120,19 @@ const fn default_rampify_corners() -> bool {
 
 const fn default_physics_collision() -> bool {
     true
+}
+
+/// How merged bricks are grown out of the voxel grid.
+#[derive(Debug, Default, PartialEq, Clone, Copy, Serialize, Deserialize)]
+pub enum MergeAlgorithm {
+    /// Interior-seeded packer: seeds from the deepest interior of each region
+    /// and grows the shortest side first, giving blocky bricks and far fewer
+    /// seams on curved shells.
+    #[default]
+    Squarish,
+    /// Morton-order greedy merge: seeds from a region corner and grows z→y→x to
+    /// maximum extent. Produces long strips, which suit flat or boxy models.
+    Greedy,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
@@ -902,7 +914,7 @@ pub fn convert(opts: &ConvertOptions, skip_textures: bool) -> ConversionResult<(
             opts.logger.log(format!("Processing material {}...", mat_id));
             if opts.rampify {
                 rampify::rampify(&octree, &mut save_data, opts)?;
-            } else if opts.squarish {
+            } else if opts.merge_algorithm == MergeAlgorithm::Squarish {
                 simplify_squarish(&octree, &mut save_data, opts, max_merge, opts.simplify);
             } else if opts.simplify {
                 simplify_lossy(&mut octree, &mut save_data, opts, max_merge);
@@ -1348,7 +1360,7 @@ fn octree_to_save_data(
 
     if opts.rampify {
         rampify::rampify(octree, &mut save_data, opts)?;
-    } else if opts.squarish {
+    } else if opts.merge_algorithm == MergeAlgorithm::Squarish {
         simplify_squarish(octree, &mut save_data, opts, max_merge, opts.simplify);
     } else if opts.simplify {
         simplify_lossy(octree, &mut save_data, opts, max_merge);

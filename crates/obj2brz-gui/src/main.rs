@@ -4,7 +4,7 @@ use eframe::{egui, egui::*, App};
 #[cfg(not(target_arch = "wasm32"))]
 use eframe::{run_native, NativeOptions};
 use gui::bool_color;
-use obj2brz::{BrickType, ConvertOptions, Logger, Material, ModelBounds, OutputFormat};
+use obj2brz::{BrickType, ConvertOptions, Logger, Material, MergeAlgorithm, ModelBounds, OutputFormat};
 #[cfg(not(target_arch = "wasm32"))]
 use obj2brz::{convert, model_bounds, validate_obj_resources};
 #[cfg(target_arch = "wasm32")]
@@ -63,6 +63,8 @@ pub struct Obj2Brs {
     save_name: String,
     scale: f32,
     simplify: bool,
+    #[serde(default)]
+    merge_algorithm: MergeAlgorithm,
     #[serde(default)]
     posterize: bool,
     #[serde(default)]
@@ -142,6 +144,7 @@ impl Default for Obj2Brs {
             save_name: "test".into(),
             scale: 1.0,
             simplify: false,
+            merge_algorithm: MergeAlgorithm::default(),
             posterize: false,
             rampify: false,
             rampify_terrain: false,
@@ -183,7 +186,7 @@ impl Obj2Brs {
             save_name: self.save_name.clone(),
             scale: self.scale,
             simplify: self.simplify,
-            squarish: false,
+            merge_algorithm: self.merge_algorithm,
             posterize: self.posterize,
             rampify: self.rampify,
             rampify_terrain: self.rampify_terrain,
@@ -731,6 +734,19 @@ impl Obj2Brs {
                 "Merge similar bricks for a less detailed model (reduces brick count)",
             );
             ui.add_enabled(!self.rampify, Checkbox::new(&mut self.simplify, "Lossy — fewer bricks"));
+            ui.end_row();
+
+            ui.label("Merge algorithm").on_hover_text(
+                "How voxels are packed into bricks. Squarish grows blocky bricks from each region's interior, leaving fewer seams on curved shells. Greedy grows long strips, which suit flat or boxy models.",
+            );
+            ui.add_enabled_ui(!self.rampify, |ui| {
+                ComboBox::from_id_salt("merge_algorithm")
+                    .selected_text(format!("{:?}", &mut self.merge_algorithm))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.merge_algorithm, MergeAlgorithm::Squarish, "Squarish");
+                        ui.selectable_value(&mut self.merge_algorithm, MergeAlgorithm::Greedy, "Greedy");
+                    });
+            });
             ui.end_row();
 
             ui.label("Rampify").on_hover_text(

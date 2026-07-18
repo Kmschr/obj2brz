@@ -21,7 +21,7 @@ mod voxelize;
 
 pub use convert::{
     convert, convert_obj_bytes_to_brz, model_bounds, model_bounds_from_bytes, output_file_path,
-    BrickType, ConvertOptions, Material, ModelBounds, OutputFormat, SaveData,
+    BrickType, ConvertOptions, Material, MergeAlgorithm, ModelBounds, OutputFormat, SaveData,
 };
 pub use error::{ConversionError, ConversionResult, MissingResources};
 pub use ldraw::is_ldraw_path;

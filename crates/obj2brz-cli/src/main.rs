@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use lexopt::prelude::*;
 use obj2brz::{
     convert, output_file_path, validate_obj_resources, BrickType, ConvertOptions, Logger, Material,
-    OutputFormat,
+    MergeAlgorithm, OutputFormat,
 };
 
 const HELP: &str = "\
@@ -28,7 +28,7 @@ OPTIONS:
         --scale <F>              Overall scale multiplier [default: 1.0]
         --brick-scale <N>        Microbrick size multiplier [default: 1]
         --simplify               Lossy merge of similar bricks
-        --squarish               Interior-seeded blocky packer (fewer seams)
+        --merge <ALGO>           squarish | greedy [default: squarish]
         --posterize              Flatten textures to their essential colors
         --rampify                Generate default ramps directly from voxels
         --rampify-terrain        Rampify for terrain: only smooth top surfaces,
@@ -61,6 +61,14 @@ fn parse_material(s: &str) -> Result<Material, String> {
         "hologram" => Ok(Material::Hologram),
         "ghost" => Ok(Material::Ghost),
         other => Err(format!("unknown material '{other}'")),
+    }
+}
+
+fn parse_merge_algorithm(s: &str) -> Result<MergeAlgorithm, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "squarish" => Ok(MergeAlgorithm::Squarish),
+        "greedy" => Ok(MergeAlgorithm::Greedy),
+        other => Err(format!("unknown merge algorithm '{other}'")),
     }
 }
 
@@ -116,7 +124,9 @@ fn run() -> Result<(), String> {
                 opts.brick_scale = parser.value().map_err(|e| e.to_string())?.parse().map_err(|e| e.to_string())?;
             }
             Long("simplify") => opts.simplify = true,
-            Long("squarish") => opts.squarish = true,
+            Long("merge") => {
+                opts.merge_algorithm = parse_merge_algorithm(&parser.value().map_err(|e| e.to_string())?.string().map_err(|e| e.to_string())?)?;
+            }
             Long("posterize") => opts.posterize = true,
             Long("rampify") => opts.rampify = true,
             Long("rampify-terrain") => {
