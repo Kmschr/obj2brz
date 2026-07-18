@@ -29,6 +29,7 @@ OPTIONS:
         --brick-scale <N>        Microbrick size multiplier [default: 1]
         --simplify               Lossy merge of similar bricks
         --squarish               Interior-seeded blocky packer (fewer seams)
+        --posterize              Flatten textures to their essential colors
         --rampify                Generate default ramps directly from voxels
         --rampify-terrain        Rampify for terrain: only smooth top surfaces,
                                  undersides become plain bricks (implies --rampify)
@@ -116,6 +117,7 @@ fn run() -> Result<(), String> {
             }
             Long("simplify") => opts.simplify = true,
             Long("squarish") => opts.squarish = true,
+            Long("posterize") => opts.posterize = true,
             Long("rampify") => opts.rampify = true,
             Long("rampify-terrain") => {
                 opts.rampify = true;

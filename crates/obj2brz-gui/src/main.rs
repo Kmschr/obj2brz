@@ -63,6 +63,8 @@ pub struct Obj2Brs {
     save_name: String,
     scale: f32,
     simplify: bool,
+    #[serde(default)]
+    posterize: bool,
     #[serde(default = "default_texture_alpha_cutout")]
     texture_alpha_cutout: bool,
     #[serde(default)]
@@ -146,6 +148,7 @@ impl Default for Obj2Brs {
             save_name: "test".into(),
             scale: 1.0,
             simplify: false,
+            posterize: false,
             texture_alpha_cutout: true,
             rampify: false,
             rampify_terrain: false,
@@ -188,6 +191,7 @@ impl Obj2Brs {
             scale: self.scale,
             simplify: self.simplify,
             squarish: false,
+            posterize: self.posterize,
             texture_alpha_cutout: self.texture_alpha_cutout,
             rampify: self.rampify,
             rampify_terrain: self.rampify_terrain,
@@ -778,6 +782,17 @@ impl Obj2Brs {
         ui.add(Checkbox::new(
             &mut self.texture_alpha_cutout,
             "Cut away transparent pixels",
+        ));
+        ui.end_row();
+
+        ui.label("Posterize Textures").on_hover_text(
+            "Flatten each texture to the colors it actually needs, cartoon \
+             style. The palette size is detected per texture, so flat colors \
+             merge into larger bricks without shifting hue.",
+        );
+        ui.add(Checkbox::new(
+            &mut self.posterize,
+            "Auto-detect flat colors",
         ));
         ui.end_row();
 

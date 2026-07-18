@@ -54,6 +54,13 @@ pub struct ConvertOptions {
     /// curved shells. Applies to both lossy (`simplify`) and lossless passes.
     #[serde(default)]
     pub squarish: bool,
+    /// Flatten each diffuse texture to the colors it actually needs: the
+    /// palette size is detected per texture, so a mostly-gray texture ends up
+    /// gray while a red texture with yellow stripes keeps both. Fewer distinct
+    /// colors let neighboring voxels share a color and merge into larger
+    /// bricks, without the hue shift a fixed color grid causes.
+    #[serde(default)]
+    pub posterize: bool,
     /// Whether a fully transparent diffuse-texture pixel cuts away the
     /// corresponding voxel. Disable this for source formats whose texture
     /// alpha stores a shader mask rather than actual geometry transparency.
@@ -96,6 +103,7 @@ impl Default for ConvertOptions {
             scale: 1.0,
             simplify: false,
             squarish: false,
+            posterize: false,
             texture_alpha_cutout: true,
             rampify: false,
             rampify_terrain: false,
@@ -223,6 +231,212 @@ fn create_solid_color_texture(diffuse: [f32; 3], dissolve: f32) -> image::RgbaIm
 
 fn float_to_color_channel(value: f32) -> u8 {
     (value.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// Working palette size handed to NeuQuant before perceptual merging collapses
+/// it to however many colors the texture actually needs.
+const POSTERIZE_WORKING_COLORS: usize = 64;
+
+/// Oklab distance below which two palette entries read as the same color at
+/// cartoon-poster scale. A just-noticeable difference is around 0.02, so this
+/// deliberately merges anything short of an obviously different color.
+const POSTERIZE_MERGE_DISTANCE: f32 = 0.1;
+
+/// Lightness carries shading, which posterization is meant to flatten, so it
+/// counts for less than hue and chroma when deciding if two colors differ.
+const POSTERIZE_LIGHTNESS_WEIGHT: f32 = 0.5;
+
+/// One color of the detected palette: the Oklab centroid it competes with, the
+/// sRGB value it paints (the dominant member's, not a muddy mean), and how many
+/// pixels it owns.
+struct PosterizeCluster {
+    lab: [f32; 3],
+    rgb: [u8; 3],
+    weight: u32,
+}
+
+fn srgb_to_linear(channel: u8) -> f32 {
+    let c = f32::from(channel) / 255.0;
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// Converts an sRGB triple to Oklab, whose euclidean distance tracks perceived
+/// color difference far better than raw RGB does.
+fn srgb_to_oklab(rgb: [u8; 3]) -> [f32; 3] {
+    let r = srgb_to_linear(rgb[0]);
+    let g = srgb_to_linear(rgb[1]);
+    let b = srgb_to_linear(rgb[2]);
+
+    let l = (0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b).cbrt();
+    let m = (0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b).cbrt();
+    let s = (0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b).cbrt();
+
+    [
+        0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+        1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+        0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s,
+    ]
+}
+
+fn oklab_distance(a: [f32; 3], b: [f32; 3]) -> f32 {
+    let dl = (a[0] - b[0]) * POSTERIZE_LIGHTNESS_WEIGHT;
+    let da = a[1] - b[1];
+    let db = a[2] - b[2];
+    (dl * dl + da * da + db * db).sqrt()
+}
+
+/// Repeatedly fuses the closest pair of clusters until every remaining pair is
+/// perceptually distinct. The heavier cluster keeps its sRGB value so the
+/// result stays a color that actually appears in the texture.
+///
+/// Linkage is complete, not average: two clusters merge only when *every* color
+/// in one is within the threshold of *every* color in the other. Average
+/// linkage chains — on a smooth gradient each step is a small hop, so the whole
+/// range collapses into a single color and an aerial photo posterizes to two
+/// tones. Complete linkage caps each cluster's own spread instead, so gradients
+/// break into distinct bands while genuinely flat regions still fuse.
+fn merge_similar_clusters(clusters: &mut Vec<PosterizeCluster>) {
+    let mut distances: Vec<Vec<f32>> = clusters
+        .iter()
+        .map(|a| {
+            clusters
+                .iter()
+                .map(|b| oklab_distance(a.lab, b.lab))
+                .collect()
+        })
+        .collect();
+
+    loop {
+        let mut closest = None;
+        let mut closest_distance = POSTERIZE_MERGE_DISTANCE;
+        for a in 0..clusters.len() {
+            for b in (a + 1)..clusters.len() {
+                if distances[a][b] < closest_distance {
+                    closest_distance = distances[a][b];
+                    closest = Some((a, b));
+                }
+            }
+        }
+
+        let Some((a, b)) = closest else { return };
+
+        // Complete-linkage update: the fused cluster is as far from every other
+        // cluster as its furthest member was.
+        for other in 0..clusters.len() {
+            let widest = distances[a][other].max(distances[b][other]);
+            distances[a][other] = widest;
+            distances[other][a] = widest;
+        }
+        distances[a][a] = 0.0;
+        distances.remove(b);
+        for row in &mut distances {
+            row.remove(b);
+        }
+
+        let absorbed = clusters.remove(b);
+        let target = &mut clusters[a];
+        let total = target.weight + absorbed.weight;
+        for axis in 0..3 {
+            target.lab[axis] = (target.lab[axis] * target.weight as f32
+                + absorbed.lab[axis] * absorbed.weight as f32)
+                / total as f32;
+        }
+        if absorbed.weight > target.weight {
+            target.rgb = absorbed.rgb;
+        }
+        target.weight = total;
+    }
+}
+
+/// Flattens a texture to the colors it actually needs. A working palette is
+/// chosen from the texture's own pixels, then entries that are perceptually
+/// indistinguishable are fused: a mostly-gray texture collapses to one or two
+/// grays, while red with yellow stripes keeps both. Per-pixel alpha is
+/// preserved, and fully transparent pixels are ignored because their RGB is
+/// usually undefined garbage that would otherwise steal a palette slot.
+/// Returns the number of colors the texture was reduced to.
+fn posterize_image(image: &mut image::RgbaImage) -> usize {
+    let opaque_pixels: Vec<u8> = image
+        .pixels()
+        .filter(|pixel| pixel.0[3] > 0)
+        .flat_map(|pixel| pixel.0)
+        .collect();
+    if opaque_pixels.len() / 4 <= POSTERIZE_WORKING_COLORS {
+        return distinct_opaque_color_count(image);
+    }
+
+    let quantizer = color_quant::NeuQuant::new(3, POSTERIZE_WORKING_COLORS, &opaque_pixels);
+    let palette = quantizer.color_map_rgba();
+    let entry_count = palette.len() / 4;
+
+    let mut weights = vec![0_u32; entry_count];
+    let mut entry_of_pixel = Vec::with_capacity(image.pixels().len());
+    for pixel in image.pixels() {
+        let entry = if pixel.0[3] > 0 {
+            let entry = quantizer.index_of(&pixel.0).min(entry_count - 1);
+            weights[entry] += 1;
+            Some(entry)
+        } else {
+            None
+        };
+        entry_of_pixel.push(entry);
+    }
+
+    // Cluster index per surviving palette entry, so pixels can be remapped by
+    // table lookup instead of a second nearest-color search.
+    let mut cluster_of_entry = vec![0_usize; entry_count];
+    let mut clusters = Vec::new();
+    for (entry, &weight) in weights.iter().enumerate() {
+        if weight == 0 {
+            continue;
+        }
+        let rgb = [palette[entry * 4], palette[entry * 4 + 1], palette[entry * 4 + 2]];
+        cluster_of_entry[entry] = clusters.len();
+        clusters.push(PosterizeCluster { lab: srgb_to_oklab(rgb), rgb, weight });
+    }
+
+    let original_clusters: Vec<[f32; 3]> = clusters.iter().map(|cluster| cluster.lab).collect();
+    merge_similar_clusters(&mut clusters);
+
+    // Merging shuffles indices, so re-point each original cluster at whichever
+    // survivor now sits closest to it.
+    let final_of_original: Vec<usize> = original_clusters
+        .iter()
+        .map(|lab| {
+            clusters
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| {
+                    oklab_distance(*lab, a.lab)
+                        .total_cmp(&oklab_distance(*lab, b.lab))
+                })
+                .map(|(index, _)| index)
+                .unwrap_or(0)
+        })
+        .collect();
+
+    for (pixel, entry) in image.pixels_mut().zip(entry_of_pixel) {
+        let Some(entry) = entry else { continue };
+        let rgb = clusters[final_of_original[cluster_of_entry[entry]]].rgb;
+        pixel.0[0] = rgb[0];
+        pixel.0[1] = rgb[1];
+        pixel.0[2] = rgb[2];
+    }
+
+    clusters.len()
+}
+
+fn distinct_opaque_color_count(image: &image::RgbaImage) -> usize {
+    image
+        .pixels()
+        .filter(|pixel| pixel.0[3] > 0)
+        .map(|pixel| [pixel.0[0], pixel.0[1], pixel.0[2]])
+        .collect::<std::collections::HashSet<_>>()
+        .len()
 }
 
 /// Validates the input model file and checks for missing resources.
@@ -601,6 +815,63 @@ f 2 3 7\nf 2 7 6\nf 3 4 8\nf 3 8 7\nf 4 1 5\nf 4 5 8\n";
 
         std::fs::remove_file(path).unwrap();
     }
+
+    /// Builds a texture by repeating `colors` across the pixels, large enough
+    /// that posterization does not bail out on a tiny image.
+    fn texture_of(colors: &[[u8; 4]]) -> image::RgbaImage {
+        image::RgbaImage::from_fn(64, 64, |x, y| {
+            image::Rgba(colors[((x + y * 64) as usize) % colors.len()])
+        })
+    }
+
+    fn distinct_opaque_colors(image: &image::RgbaImage) -> std::collections::HashSet<[u8; 3]> {
+        image
+            .pixels()
+            .filter(|pixel| pixel.0[3] > 0)
+            .map(|pixel| [pixel.0[0], pixel.0[1], pixel.0[2]])
+            .collect()
+    }
+
+    #[test]
+    fn posterize_collapses_near_identical_shades_to_one_color() {
+        let mut image = texture_of(&[
+            [128, 128, 128, 255],
+            [130, 130, 130, 255],
+            [126, 127, 129, 255],
+            [131, 129, 128, 255],
+        ]);
+
+        posterize_image(&mut image);
+
+        assert_eq!(distinct_opaque_colors(&image).len(), 1);
+    }
+
+    #[test]
+    fn posterize_keeps_visibly_different_colors_apart() {
+        let mut image = texture_of(&[[200, 20, 20, 255], [230, 220, 40, 255]]);
+
+        posterize_image(&mut image);
+
+        let colors = distinct_opaque_colors(&image);
+        assert_eq!(colors.len(), 2);
+        // Both survivors should still read as red and yellow, not a blend.
+        assert!(colors.iter().any(|c| c[0] > c[2] && c[1] < 100));
+        assert!(colors.iter().any(|c| c[0] > 150 && c[1] > 150));
+    }
+
+    #[test]
+    fn posterize_ignores_transparent_pixels() {
+        let mut image = texture_of(&[[10, 200, 10, 255], [255, 0, 255, 0]]);
+
+        posterize_image(&mut image);
+
+        assert_eq!(distinct_opaque_colors(&image).len(), 1);
+        let transparent = image
+            .pixels()
+            .find(|pixel| pixel.0[3] == 0)
+            .expect("transparent pixels should be preserved");
+        assert_eq!(transparent.0[3], 0);
+    }
 }
 
 /// Runs a full conversion described by `opts`, writing the resulting save to disk.
@@ -784,6 +1055,14 @@ fn load_models_and_materials(
                 let dissolve = material.dissolve.unwrap_or(1.0);
                 material_images.push(create_solid_color_texture(diffuse, dissolve));
             }
+        }
+    }
+
+    if opt.posterize {
+        for (index, image) in material_images.iter_mut().enumerate() {
+            let colors = posterize_image(image);
+            opt.logger
+                .log(format!("  Posterized texture {index} to {colors} colors"));
         }
     }
 

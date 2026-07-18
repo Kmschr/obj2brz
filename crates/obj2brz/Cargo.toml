@@ -10,6 +10,7 @@ tobj = "4.0"
 brdb.workspace = true
 cgmath.workspace = true
 image = "0.24"
+color_quant = "1.1"
 uuid.workspace = true
 thiserror = "2.0"
 serde.workspace = true
