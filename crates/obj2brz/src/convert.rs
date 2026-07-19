@@ -1385,8 +1385,40 @@ fn obj_preview_jpg() -> ConversionResult<Vec<u8>> {
 }
 
 fn write_brz_data(octree: &mut octree::VoxelTree<Vector4<u8>>, opts: &ConvertOptions, material_id: Option<usize>) -> ConversionResult<()> {
-    let save_data = octree_to_save_data(octree, opts, material_id)?;
+    // A model too large for one rampify grid comes back as several chunks,
+    // each of which becomes its own frozen grid.
+    if opts.rampify {
+        opts.logger.log("Rampifying...".to_string());
+        let chunks = rampify::rampify_chunked(octree, opts)?;
+        if chunks.len() > 1 {
+            let grids = chunks
+                .into_iter()
+                .map(|bricks| (frozen_grid_entity(), bricks))
+                .collect();
+            return write_brz_with_grids(opts, grids);
+        }
 
+        let save_data = SaveData {
+            bricks: chunks.into_iter().next().unwrap_or_default(),
+            author_name: opts.save_owner_name.clone(),
+        };
+        return write_save_data(opts, &save_data);
+    }
+
+    let save_data = octree_to_save_data(octree, opts, material_id)?;
+    write_save_data(opts, &save_data)
+}
+
+/// A frozen grid pinned at the world origin. Chunk bricks keep their absolute
+/// positions, so every chunk grid must sit at the same spot to line up.
+fn frozen_grid_entity() -> Entity {
+    Entity {
+        frozen: true,
+        ..Default::default()
+    }
+}
+
+fn write_save_data(opts: &ConvertOptions, save_data: &SaveData) -> ConversionResult<()> {
     // Write file
     opts.logger.log(format!("Writing {} bricks...", save_data.bricks.len()));
 

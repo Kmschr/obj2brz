@@ -18,6 +18,10 @@ use crate::{
 const RAMP_MAX_RUN: usize = 4;
 const RAMP_MAX_RISE: usize = 12;
 const MAX_GRID_VOXELS: usize = 64 * 1024 * 1024;
+/// Neighbouring voxels each chunk loads for context. A ramp reaches at most
+/// `RAMP_MAX_RISE` cells up and `RAMP_MAX_RUN` along, so this covers every
+/// lookup slope fitting makes across a chunk boundary.
+const CHUNK_HALO: isize = RAMP_MAX_RISE as isize;
 const EXTERIOR_AIR: u32 = u32::MAX;
 
 #[derive(Clone, Copy)]
@@ -84,53 +88,65 @@ struct Rampifier {
     grid: Vec<u32>,
     occupied_by_ramps: HashSet<usize>,
     origin: Vox,
+    /// Inclusive local bounds of the cells this instance may emit bricks for.
+    /// Everything outside is halo or air border.
+    core: (Vox, Vox),
 }
 
 impl Rampifier {
+    /// Whole-octree constructor, kept for tests that build a grid directly.
+    /// Conversions go through [`rampify_chunked`], which picks the region.
+    #[cfg(test)]
     fn from_octree(octree: &VoxelTree<Vector4<u8>>) -> ConversionResult<Option<Self>> {
-        let mut min = Vox(isize::MAX, isize::MAX, isize::MAX);
-        let mut max = Vox(isize::MIN, isize::MIN, isize::MIN);
-        let mut count = 0usize;
-
-        octree.for_each_leaf(|position, _| {
-            let position = octree_to_brickadia_grid(position);
-            min.0 = min.0.min(position.0);
-            min.1 = min.1.min(position.1);
-            min.2 = min.2.min(position.2);
-            max.0 = max.0.max(position.0);
-            max.1 = max.1.max(position.1);
-            max.2 = max.2.max(position.2);
-            count += 1;
-        });
-
-        if count == 0 {
+        let Some((min, max)) = octree_bounds(octree) else {
             return Ok(None);
-        }
+        };
+        Self::from_octree_region(octree, min, max, 0).map(Some)
+    }
+
+    /// Builds a dense grid covering `core_min..=core_max`, surrounded by `halo`
+    /// cells of neighbouring voxels and a one-cell air border.
+    ///
+    /// The halo is read-only context: it feeds slope decisions and the flood
+    /// fill, but [`Self::in_core`] keeps every brick anchored inside the core,
+    /// so the chunk that owns those cells is the one that emits them. The air
+    /// border lets the flood fill tell exterior air from the enclosed space
+    /// inside a watertight mesh.
+    fn from_octree_region(
+        octree: &VoxelTree<Vector4<u8>>,
+        core_min: Vox,
+        core_max: Vox,
+        halo: isize,
+    ) -> ConversionResult<Self> {
+        let overflowed =
+            || ConversionError::RampifyGridTooLarge("model bounds overflowed".into());
+        let pad = halo + 1;
+        let origin = Vox(
+            core_min.0.checked_sub(pad).ok_or_else(overflowed)?,
+            core_min.1.checked_sub(pad).ok_or_else(overflowed)?,
+            core_min.2.checked_sub(pad).ok_or_else(overflowed)?,
+        );
+        let far = Vox(
+            core_max.0.checked_add(pad).ok_or_else(overflowed)?,
+            core_max.1.checked_add(pad).ok_or_else(overflowed)?,
+            core_max.2.checked_add(pad).ok_or_else(overflowed)?,
+        );
 
         let dimension = |low: isize, high: isize| {
             usize::try_from(high - low + 1).map_err(|_| {
                 ConversionError::RampifyGridTooLarge("model bounds are not representable".into())
             })
         };
-        // Keep a one-voxel air border so flood fill can distinguish exterior
-        // air from the enclosed space inside a watertight mesh.
-        let origin = Vox(
-            min.0.checked_sub(1).ok_or_else(|| ConversionError::RampifyGridTooLarge("model bounds underflowed".into()))?,
-            min.1.checked_sub(1).ok_or_else(|| ConversionError::RampifyGridTooLarge("model bounds underflowed".into()))?,
-            min.2.checked_sub(1).ok_or_else(|| ConversionError::RampifyGridTooLarge("model bounds underflowed".into()))?,
-        );
         let size = (
-            dimension(origin.0, max.0.checked_add(1).ok_or_else(|| ConversionError::RampifyGridTooLarge("model bounds overflowed".into()))?)?,
-            dimension(origin.1, max.1.checked_add(1).ok_or_else(|| ConversionError::RampifyGridTooLarge("model bounds overflowed".into()))?)?,
-            dimension(origin.2, max.2.checked_add(1).ok_or_else(|| ConversionError::RampifyGridTooLarge("model bounds overflowed".into()))?)?,
+            dimension(origin.0, far.0)?,
+            dimension(origin.1, far.1)?,
+            dimension(origin.2, far.2)?,
         );
         let cells = size
             .0
             .checked_mul(size.1)
             .and_then(|value| value.checked_mul(size.2))
-            .ok_or_else(|| {
-                ConversionError::RampifyGridTooLarge("model bounds overflowed".into())
-            })?;
+            .ok_or_else(overflowed)?;
         if cells > MAX_GRID_VOXELS {
             return Err(ConversionError::RampifyGridTooLarge(format!(
                 "{} voxels (limit is {}); reduce the model scale",
@@ -138,11 +154,25 @@ impl Rampifier {
             )));
         }
 
+        // Without a halo there is no neighbouring chunk to keep out of, so the
+        // whole grid (air border included) is fair game for brick generation.
+        let core = if halo == 0 {
+            (
+                Vox(0, 0, 0),
+                Vox(size.0 as isize - 1, size.1 as isize - 1, size.2 as isize - 1),
+            )
+        } else {
+            (
+                Vox(core_min.0 - origin.0, core_min.1 - origin.1, core_min.2 - origin.2),
+                Vox(core_max.0 - origin.0, core_max.1 - origin.1, core_max.2 - origin.2),
+            )
+        };
         let mut rampifier = Self {
             size,
             grid: vec![0; cells],
             occupied_by_ramps: HashSet::new(),
             origin,
+            core,
         };
         octree.for_each_leaf(|position, color| {
             let position = octree_to_brickadia_grid(position);
@@ -151,13 +181,14 @@ impl Rampifier {
                 position.1 - origin.1,
                 position.2 - origin.2,
             );
-            let index = rampifier
-                .index(local)
-                .expect("octree leaf must be in its bounds");
-            rampifier.grid[index] = pack_color(*color);
+            // Chunked runs see the whole octree, most of which lies outside
+            // this chunk's grid.
+            if let Some(index) = rampifier.index(local) {
+                rampifier.grid[index] = pack_color(*color);
+            }
         });
         rampifier.fill_enclosed_air();
-        Ok(Some(rampifier))
+        Ok(rampifier)
     }
 
     fn index(&self, position: Vox) -> Option<usize> {
@@ -183,6 +214,39 @@ impl Rampifier {
 
     fn exists(&self, position: Vox) -> bool {
         self.voxel(position) != 0
+    }
+
+    /// Whether every cell a ramp or corner would consume lies in this grid's
+    /// core. A chunk must not emit bricks reaching into its halo: those cells
+    /// belong to a neighbouring chunk, and two grids covering the same cells
+    /// would overlap in the world. Rejected fits fall through to `fill_gaps`,
+    /// which emits plain bricks, so seams stay filled but blockier.
+    ///
+    /// `position` is the anchor `create_ramp`/`create_corner` derive, which for
+    /// ceiling bricks sits `rise - 1` cells below the fitted position.
+    fn footprint_in_core(&self, position: Vox, rise: usize, floor: bool, spans: &[(Vox, usize)]) -> bool {
+        let anchor = if floor {
+            position
+        } else {
+            position - Vox(0, 0, rise as isize - 1)
+        };
+        let mut corner = anchor + Vox(0, 0, rise as isize - 1);
+        for (axis, length) in spans {
+            corner = corner + *axis * (*length as isize - 1);
+        }
+        self.in_core(anchor) && self.in_core(corner)
+    }
+
+    /// Whether a cell may anchor or be consumed by brick generation. Halo and
+    /// border cells never can: they exist only as context for the core.
+    fn in_core(&self, position: Vox) -> bool {
+        let (low, high) = self.core;
+        position.0 >= low.0
+            && position.1 >= low.1
+            && position.2 >= low.2
+            && position.0 <= high.0
+            && position.1 <= high.1
+            && position.2 <= high.2
     }
 
     fn is_ramp(&self, position: Vox) -> bool {
@@ -420,6 +484,26 @@ impl Rampifier {
         )
     }
 
+    /// Runs the full pass over this grid's core: corners, ramps, then plain
+    /// bricks for whatever is left.
+    fn generate(&mut self, opts: &ConvertOptions, output: &mut Vec<Brick>) {
+        // Corners run first: straight ramps along the edges next to a convex
+        // corner would otherwise consume the corner's footprint cells.
+        if opts.rampify_corners {
+            self.generate_corners(true, opts, output);
+        }
+        self.generate_ramps(true, opts, output);
+        // Terrain mode only smooths upward-facing surfaces; undersides are left
+        // for fill_gaps, which emits plain upright bricks.
+        if !opts.rampify_terrain {
+            if opts.rampify_corners {
+                self.generate_corners(false, opts, output);
+            }
+            self.generate_ramps(false, opts, output);
+        }
+        self.fill_gaps(opts, output);
+    }
+
     fn generate_corners(&mut self, floor: bool, opts: &ConvertOptions, output: &mut Vec<Brick>) {
         const ROTATIONS: [Rotation; 4] = [
             Rotation::Deg0,
@@ -443,6 +527,14 @@ impl Rampifier {
                         for inner in [false, true] {
                             if let Some(fit) = self.fit_corner(position, rotation, floor, inner)
                             {
+                                let (run_a, run_b, rise) = fit;
+                                let spans = [
+                                    (Vox::forward(rotation), run_a),
+                                    (Vox::forward(next_rotation(rotation)), run_b),
+                                ];
+                                if !self.footprint_in_core(position, rise, floor, &spans) {
+                                    continue;
+                                }
                                 output.push(self.create_corner(
                                     position, fit, inner, rotation, floor, opts,
                                 ));
@@ -554,9 +646,12 @@ impl Rampifier {
                     if self.exists(position) && !self.is_ramp(position) {
                         if let Some(rotation) = self.best_rotation(position, floor) {
                             if let Some((run, rise)) = self.fit_ramp(position, rotation, floor) {
-                                output.push(
-                                    self.create_ramp(position, run, rise, rotation, floor, opts),
-                                );
+                                let spans = [(Vox::forward(rotation), run)];
+                                if self.footprint_in_core(position, rise, floor, &spans) {
+                                    output.push(
+                                        self.create_ramp(position, run, rise, rotation, floor, opts),
+                                    );
+                                }
                             }
                         }
                     }
@@ -574,7 +669,7 @@ impl Rampifier {
                 for x in 0..self.size.0 {
                     let position = Vox(x as isize, y as isize, z as isize);
                     let color = self.voxel(position);
-                    if color == 0 {
+                    if color == 0 || !self.in_core(position) {
                         continue;
                     }
                     let h = self.grow(position, Vox(0, 0, 1), 64, color, (1, 1, 1));
@@ -627,7 +722,8 @@ impl Rampifier {
                     for z in 0..dimensions.2 {
                         let offset =
                             Vox(x as isize, y as isize, z as isize) + axis * length as isize;
-                        if self.voxel(position + offset) != color {
+                        let candidate = position + offset;
+                        if !self.in_core(candidate) || self.voxel(candidate) != color {
                             matches = false;
                         }
                     }
@@ -712,31 +808,158 @@ pub fn rampify(
     save: &mut SaveData,
     opts: &ConvertOptions,
 ) -> ConversionResult<()> {
-    let Some(mut rampifier) = Rampifier::from_octree(octree)? else {
-        return Ok(());
-    };
-    opts.logger.log(format!(
-        "Rampifying {} voxel cells directly from the octree...",
-        rampifier.grid.len()
-    ));
-    // Corners run first: straight ramps along the edges next to a convex
-    // corner would otherwise consume the corner's footprint cells.
-    if opts.rampify_corners {
-        rampifier.generate_corners(true, opts, &mut save.bricks);
+    // Callers that want one grid per chunk use `rampify_chunked` directly;
+    // here the chunks are concatenated, which is geometrically identical
+    // because brick positions are absolute.
+    for chunk in rampify_chunked(octree, opts)? {
+        save.bricks.extend(chunk);
     }
-    rampifier.generate_ramps(true, opts, &mut save.bricks);
-    // Terrain mode only smooths upward-facing surfaces; undersides are left
-    // for fill_gaps, which emits plain upright bricks.
-    if !opts.rampify_terrain {
-        if opts.rampify_corners {
-            rampifier.generate_corners(false, opts, &mut save.bricks);
-        }
-        rampifier.generate_ramps(false, opts, &mut save.bricks);
-    }
-    rampifier.fill_gaps(opts, &mut save.bricks);
-    opts.logger
-        .log(format!("Rampify generated {} bricks", save.bricks.len()));
     Ok(())
+}
+
+/// Rampifies an octree into one brick list per chunk.
+///
+/// The rampifier needs a dense voxel grid, so a model whose bounding box
+/// exceeds [`MAX_GRID_VOXELS`] used to be rejected outright. Such a model is
+/// instead split into spatial chunks that are rampified independently, each
+/// small enough to fit the budget. Callers turn each chunk into its own frozen
+/// grid. Models that already fit produce a single chunk.
+pub fn rampify_chunked(
+    octree: &VoxelTree<Vector4<u8>>,
+    opts: &ConvertOptions,
+) -> ConversionResult<Vec<Vec<Brick>>> {
+    rampify_chunked_with_budget(octree, opts, MAX_GRID_VOXELS)
+}
+
+/// [`rampify_chunked`] with an explicit per-chunk voxel budget, so tests can
+/// force chunking on a model small enough to assert over.
+fn rampify_chunked_with_budget(
+    octree: &VoxelTree<Vector4<u8>>,
+    opts: &ConvertOptions,
+    budget: usize,
+) -> ConversionResult<Vec<Vec<Brick>>> {
+    let Some((min, max)) = octree_bounds(octree) else {
+        return Ok(Vec::new());
+    };
+
+    let counts = chunk_counts((min, max), budget);
+    let total: usize = counts.0 * counts.1 * counts.2;
+    if total == 1 {
+        let mut bricks = Vec::new();
+        let mut rampifier = Rampifier::from_octree_region(octree, min, max, 0)?;
+        opts.logger.log(format!(
+            "Rampifying {} voxel cells directly from the octree...",
+            rampifier.grid.len()
+        ));
+        rampifier.generate(opts, &mut bricks);
+        opts.logger
+            .log(format!("Rampify generated {} bricks", bricks.len()));
+        return Ok(vec![bricks]);
+    }
+
+    opts.logger.log(format!(
+        "Model is too large for a single rampify grid; splitting into {} chunks ({}x{}x{})",
+        total, counts.0, counts.1, counts.2
+    ));
+
+    let extent =
+        |low: isize, high: isize, count: usize| ((high - low + 1) as usize).div_ceil(count) as isize;
+    let extents = (
+        extent(min.0, max.0, counts.0),
+        extent(min.1, max.1, counts.1),
+        extent(min.2, max.2, counts.2),
+    );
+
+    let mut chunks = Vec::new();
+    for iz in 0..counts.2 {
+        for iy in 0..counts.1 {
+            for ix in 0..counts.0 {
+                let core_min = Vox(
+                    min.0 + ix as isize * extents.0,
+                    min.1 + iy as isize * extents.1,
+                    min.2 + iz as isize * extents.2,
+                );
+                let core_max = Vox(
+                    (core_min.0 + extents.0 - 1).min(max.0),
+                    (core_min.1 + extents.1 - 1).min(max.1),
+                    (core_min.2 + extents.2 - 1).min(max.2),
+                );
+
+                let mut rampifier =
+                    Rampifier::from_octree_region(octree, core_min, core_max, CHUNK_HALO)?;
+                let mut bricks = Vec::new();
+                rampifier.generate(opts, &mut bricks);
+                if bricks.is_empty() {
+                    continue;
+                }
+                opts.logger.log(format!(
+                    "  Chunk {} of {} generated {} bricks",
+                    chunks.len() + 1,
+                    total,
+                    bricks.len()
+                ));
+                chunks.push(bricks);
+            }
+        }
+    }
+
+    Ok(chunks)
+}
+
+/// Splits the model's bounding box until one chunk's dense grid fits the voxel
+/// budget, always halving the longest axis so chunks stay roughly cubic.
+fn chunk_counts(bounds: (Vox, Vox), budget: usize) -> (usize, usize, usize) {
+    let (min, max) = bounds;
+    let dims = [
+        (max.0 - min.0 + 1).max(1) as usize,
+        (max.1 - min.1 + 1).max(1) as usize,
+        (max.2 - min.2 + 1).max(1) as usize,
+    ];
+    let mut counts = [1usize, 1, 1];
+
+    loop {
+        // Each chunk carries a halo and an air border on both sides.
+        let padding = 2 * (CHUNK_HALO as usize + 1);
+        let cells = (0..3)
+            .map(|axis| dims[axis].div_ceil(counts[axis]) + padding)
+            .try_fold(1usize, |cells, extent| cells.checked_mul(extent));
+        match cells {
+            Some(cells) if cells <= budget => break,
+            _ => {}
+        }
+
+        let longest = (0..3)
+            .max_by_key(|&axis| dims[axis].div_ceil(counts[axis]))
+            .expect("three axes");
+        // A chunk cannot shrink below the padding it carries, so give up rather
+        // than loop forever on a model that is hopeless in every direction.
+        if dims[longest].div_ceil(counts[longest]) <= 1 {
+            break;
+        }
+        counts[longest] += 1;
+    }
+
+    (counts[0], counts[1], counts[2])
+}
+
+/// Absolute bounds of the octree's occupied cells, in Brickadia grid axes.
+fn octree_bounds(octree: &VoxelTree<Vector4<u8>>) -> Option<(Vox, Vox)> {
+    let mut min = Vox(isize::MAX, isize::MAX, isize::MAX);
+    let mut max = Vox(isize::MIN, isize::MIN, isize::MIN);
+    let mut count = 0usize;
+
+    octree.for_each_leaf(|position, _| {
+        let position = octree_to_brickadia_grid(position);
+        min.0 = min.0.min(position.0);
+        min.1 = min.1.min(position.1);
+        min.2 = min.2.min(position.2);
+        max.0 = max.0.max(position.0);
+        max.1 = max.1.max(position.1);
+        max.2 = max.2.max(position.2);
+        count += 1;
+    });
+
+    (count > 0).then_some((min, max))
 }
 
 /// The voxelizer retains OBJ coordinates, but Brickadia's default bricks use
@@ -982,5 +1205,147 @@ mod tests {
 
         let rampifier = Rampifier::from_octree(&tree).unwrap().unwrap();
         assert_ne!(rampifier.voxel(Vox(2, 2, 2)), 0);
+    }
+}
+
+#[cfg(test)]
+mod chunk_tests {
+    use super::*;
+    use crate::octree::TreeBody;
+    use std::collections::HashSet;
+
+    /// A stepped ridge: tall enough to slope, wide enough to split several
+    /// ways, and open on all sides so no enclosed air is involved.
+    fn stepped_ridge() -> VoxelTree<Vector4<u8>> {
+        let mut tree = VoxelTree::new();
+        for x in 0..24isize {
+            for z in 0..24isize {
+                let height = 1 + (x % 6).min(z % 6);
+                for y in 0..height {
+                    *tree.get_mut_or_create(cgmath::Vector3::new(x, y, z)) =
+                        TreeBody::Leaf(Vector4::new(200, 100, 50, 255));
+                }
+            }
+        }
+        tree
+    }
+
+    /// The voxel box a brick occupies, in Brickadia grid cells. Brick positions
+    /// are centres and sizes are half-extents, in the 10x10x4 units per voxel
+    /// that `create_ramp` and `fill_gaps` emit.
+    fn brick_cells(brick: &Brick) -> Vec<(isize, isize, isize)> {
+        let BrickType::Procedural { size, .. } = &brick.asset else {
+            panic!("rampify emits procedural bricks, which carry their size");
+        };
+        // Sizes are in the brick's local axes; a quarter turn swaps X and Y in
+        // world space.
+        let size = match brick.rotation {
+            Rotation::Deg90 | Rotation::Deg270 => BrickSize::new(size.y, size.x, size.z),
+            _ => *size,
+        };
+        let position = brick.position;
+        let low = (
+            ((position.x - size.x as i32) / 10) as isize,
+            ((position.y - size.y as i32) / 10) as isize,
+            ((position.z - size.z as i32) / 4) as isize,
+        );
+        let extent = (
+            (size.x as isize * 2) / 10,
+            (size.y as isize * 2) / 10,
+            (size.z as isize * 2) / 4,
+        );
+        let mut cells = Vec::new();
+        for dx in 0..extent.0 {
+            for dy in 0..extent.1 {
+                for dz in 0..extent.2 {
+                    cells.push((low.0 + dx, low.1 + dy, low.2 + dz));
+                }
+            }
+        }
+        cells
+    }
+
+    fn solid_cells(tree: &VoxelTree<Vector4<u8>>) -> HashSet<(isize, isize, isize)> {
+        let mut cells = HashSet::new();
+        tree.for_each_leaf(|position, _| {
+            let position = octree_to_brickadia_grid(position);
+            cells.insert((position.0, position.1, position.2));
+        });
+        cells
+    }
+
+    #[test]
+    fn small_models_stay_in_one_chunk() {
+        let tree = stepped_ridge();
+        let chunks = rampify_chunked(&tree, &ConvertOptions::default()).unwrap();
+        assert_eq!(chunks.len(), 1);
+    }
+
+    #[test]
+    fn oversized_models_split_into_several_chunks() {
+        let tree = stepped_ridge();
+        // A budget this small forces a split on a model that would otherwise
+        // fit many times over.
+        let chunks = rampify_chunked_with_budget(&tree, &ConvertOptions::default(), 40_000).unwrap();
+        assert!(chunks.len() > 1, "expected a split, got {} chunk(s)", chunks.len());
+        assert!(chunks.iter().all(|chunk| !chunk.is_empty()));
+    }
+
+    #[test]
+    fn chunk_seams_leave_no_holes_and_no_overlap() {
+        let tree = stepped_ridge();
+        let opts = ConvertOptions::default();
+        let chunks = rampify_chunked_with_budget(&tree, &opts, 40_000).unwrap();
+        assert!(chunks.len() > 1);
+
+        let mut covered = HashSet::new();
+        for brick in chunks.iter().flatten() {
+            for cell in brick_cells(brick) {
+                assert!(
+                    covered.insert(cell),
+                    "cell {cell:?} is covered by two bricks; chunk grids would overlap"
+                );
+            }
+        }
+
+        for cell in solid_cells(&tree) {
+            assert!(
+                covered.contains(&cell),
+                "solid cell {cell:?} has no brick; a chunk seam left a hole"
+            );
+        }
+    }
+
+    #[test]
+    fn chunking_covers_the_same_cells_as_a_single_grid() {
+        let tree = stepped_ridge();
+        let opts = ConvertOptions::default();
+
+        let single: HashSet<_> = rampify_chunked(&tree, &opts)
+            .unwrap()
+            .iter()
+            .flatten()
+            .flat_map(brick_cells)
+            .collect();
+        let chunked: HashSet<_> = rampify_chunked_with_budget(&tree, &opts, 40_000)
+            .unwrap()
+            .iter()
+            .flatten()
+            .flat_map(brick_cells)
+            .collect();
+
+        // Ramps also claim the air cells they slope through, so the two passes
+        // need not agree cell for cell; the solid surface must match exactly.
+        let solid = solid_cells(&tree);
+        assert_eq!(
+            single.intersection(&solid).count(),
+            solid.len(),
+            "single-grid rampify left solid cells uncovered"
+        );
+        assert_eq!(
+            chunked.intersection(&solid).count(),
+            solid.len(),
+            "chunked rampify left solid cells uncovered"
+        );
     }
 }
