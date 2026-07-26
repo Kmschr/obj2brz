@@ -773,6 +773,19 @@ impl GridGroup {
         let mut brick = wedge.brick.clone();
         brick.position = (rounded_x as i32, rounded_y as i32, -1).into();
         brick.rotation = rotation;
+        // Procedural micro-wedges have triangular footprints. Quantizing the
+        // two legs of an altitude split can make its otherwise adjacent
+        // halves overlap slightly. Brickadia rejects overlapping bricks in a
+        // single grid, which used to discard one half of many single-sided
+        // source faces. Keep sharing the plane, but start another compatible
+        // grid whenever the fitted triangle would overlap a resident wedge.
+        if self
+            .bricks
+            .iter()
+            .any(|resident| micro_wedge_footprints_overlap(resident, &brick))
+        {
+            return false;
+        }
         let translation = self.x_axis * (rounded_x - local_x) + self.y_axis * (rounded_y - local_y)
             - self.z_axis * local_z;
         stats.record_wedge(
@@ -795,6 +808,66 @@ impl GridGroup {
             self.bricks,
         )
     }
+}
+
+type FootprintPoint = (i64, i64);
+
+fn micro_wedge_footprints_overlap(left: &Brick, right: &Brick) -> bool {
+    let (Some(left), Some(right)) = (micro_wedge_footprint(left), micro_wedge_footprint(right))
+    else {
+        // Grid meshes only emit procedural micro-wedges. Be conservative if
+        // that invariant changes rather than allowing an unchecked overlap.
+        return true;
+    };
+
+    // Convex-triangle separating-axis test. Merely touching along an edge or
+    // at a vertex is valid; only a positive-area intersection is an overlap.
+    left.into_iter()
+        .zip(left.into_iter().cycle().skip(1))
+        .chain(right.into_iter().zip(right.into_iter().cycle().skip(1)))
+        .take(6)
+        .all(|(start, end)| {
+            let axis = (start.1 - end.1, end.0 - start.0);
+            projection_ranges_overlap(left, right, axis)
+        })
+}
+
+fn projection_ranges_overlap(
+    left: [FootprintPoint; 3],
+    right: [FootprintPoint; 3],
+    axis: FootprintPoint,
+) -> bool {
+    let range = |triangle: [FootprintPoint; 3]| {
+        triangle
+            .map(|point| point.0 * axis.0 + point.1 * axis.1)
+            .into_iter()
+            .fold((i64::MAX, i64::MIN), |(min, max), value| {
+                (min.min(value), max.max(value))
+            })
+    };
+    let (left_min, left_max) = range(left);
+    let (right_min, right_max) = range(right);
+    left_min < right_max && right_min < left_max
+}
+
+fn micro_wedge_footprint(brick: &Brick) -> Option<[FootprintPoint; 3]> {
+    let BrickType::Procedural { asset, size } = &brick.asset else {
+        return None;
+    };
+    if asset.as_ref() != assets::bricks::PB_DEFAULT_MICRO_WEDGE.as_ref() {
+        return None;
+    }
+
+    let center = (i64::from(brick.position.x), i64::from(brick.position.y));
+    let x = i64::from(size.x);
+    let y = i64::from(size.y);
+    let offset = |dx, dy| (center.0 + dx, center.1 + dy);
+    Some(match brick.rotation {
+        Rotation::Deg0 => [offset(-x, -y), offset(x, -y), offset(-x, y)],
+        Rotation::Deg90 => [offset(x, -y), offset(-x, -y), offset(x, y)],
+        Rotation::Deg180 => [offset(x, y), offset(x, -y), offset(-x, y)],
+        Rotation::Deg270 => [offset(-x, y), offset(x, y), offset(-x, -y)],
+    })
 }
 
 fn quarter_turn(
@@ -1044,6 +1117,19 @@ mod tests {
         tobj::Model::new(mesh, "test".to_string())
     }
 
+    fn assert_grids_have_no_overlapping_wedges(data: &GridMeshData) {
+        for (_, bricks) in &data.grids {
+            for left in 0..bricks.len() {
+                for right in left + 1..bricks.len() {
+                    assert!(
+                        !micro_wedge_footprints_overlap(&bricks[left], &bricks[right]),
+                        "grid contains overlapping wedges at indices {left} and {right}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn right_triangle_uses_one_grid_and_a_hidden_anchor() {
         let data = build(
@@ -1078,7 +1164,7 @@ mod tests {
         assert_eq!(data.stats.subdivided_source_triangles, 1);
         assert_eq!(data.stats.emitted_wedges, 2);
         assert_eq!(data.grids.len(), 1);
-        for (entity, bricks) in data.grids {
+        for (entity, bricks) in &data.grids {
             let q = entity.rotation;
             let magnitude = (q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w).sqrt();
             assert!((magnitude - 1.0).abs() < 1.0e-5);
@@ -1088,6 +1174,54 @@ mod tests {
                 .iter()
                 .any(|brick| matches!(brick.rotation, Rotation::Deg90 | Rotation::Deg270)));
         }
+        assert_grids_have_no_overlapping_wedges(&data);
+    }
+
+    #[test]
+    fn touching_complementary_wedges_do_not_count_as_overlapping() {
+        let wedge = |rotation| Brick {
+            asset: BrickType::Procedural {
+                asset: assets::bricks::PB_DEFAULT_MICRO_WEDGE,
+                size: BrickSize::new(7, 5, 1),
+            },
+            position: (10, 20, -1).into(),
+            rotation,
+            ..Default::default()
+        };
+
+        assert!(!micro_wedge_footprints_overlap(
+            &wedge(Rotation::Deg0),
+            &wedge(Rotation::Deg180)
+        ));
+        assert!(micro_wedge_footprints_overlap(
+            &wedge(Rotation::Deg0),
+            &wedge(Rotation::Deg90)
+        ));
+    }
+
+    #[test]
+    fn quantized_single_sided_strip_never_groups_overlapping_halves() {
+        // Representative non-square, non-integral quad strip like Blender's
+        // single-sided race-track export. Both source triangles require an
+        // altitude split after conversion to Brickadia units.
+        let data = build(
+            &[model(
+                &[
+                    [0.0, 0.0, 0.0],
+                    [1.44, 0.008, 0.0],
+                    [1.438_772, -0.007_478, 0.957_871],
+                    [0.001_228, -0.091_427, 0.953_436],
+                ],
+                &[0, 1, 2, 0, 2, 3],
+            )],
+            &[RgbaImage::from_pixel(1, 1, image::Rgba([255; 4]))],
+            &options(),
+        )
+        .unwrap();
+
+        assert_eq!(data.stats.source_triangles, 2);
+        assert_eq!(data.stats.emitted_wedges, 4);
+        assert_grids_have_no_overlapping_wedges(&data);
     }
 
     #[test]
@@ -1113,7 +1247,7 @@ mod tests {
     }
 
     #[test]
-    fn general_triangles_forming_a_coplanar_quad_share_a_grid() {
+    fn general_triangles_forming_a_coplanar_quad_use_non_overlapping_grids() {
         let data = build(
             &[model(
                 &[
@@ -1131,8 +1265,15 @@ mod tests {
 
         assert_eq!(data.stats.source_triangles, 2);
         assert_eq!(data.stats.emitted_wedges, 4);
-        assert_eq!(data.stats.emitted_grids, 1);
-        assert_eq!(data.grids[0].1.len(), 4);
+        assert_eq!(data.stats.emitted_grids, 2);
+        assert_eq!(
+            data.grids
+                .iter()
+                .map(|(_, bricks)| bricks.len())
+                .sum::<usize>(),
+            4
+        );
+        assert_grids_have_no_overlapping_wedges(&data);
     }
 
     #[test]
