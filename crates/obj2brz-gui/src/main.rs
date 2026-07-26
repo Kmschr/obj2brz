@@ -32,6 +32,13 @@ const SUPPORTED_FORMATS: &str = "OBJ, STL, FBX, glTF (.gltf / .glb)";
 #[cfg(target_arch = "wasm32")]
 const SUPPORTED_FORMATS: &str = "OBJ, STL, glTF (.gltf / .glb)";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConversionMode {
+    Voxel,
+    Rampify,
+    GridMesh,
+}
+
 /// GUI application state. Wraps the UI-agnostic [`ConvertOptions`] with the
 /// transient widgets and channels the egui front-end needs.
 #[derive(Debug, Serialize, Deserialize)]
@@ -69,6 +76,8 @@ pub struct Obj2Brs {
     posterize: bool,
     #[serde(default)]
     rampify: bool,
+    #[serde(default)]
+    grid_mesh: bool,
     #[serde(default)]
     rampify_terrain: bool,
     #[serde(default = "default_rampify_corners")]
@@ -147,6 +156,7 @@ impl Default for Obj2Brs {
             merge_algorithm: MergeAlgorithm::default(),
             posterize: false,
             rampify: false,
+            grid_mesh: false,
             rampify_terrain: false,
             rampify_corners: true,
             split_by_material: false,
@@ -168,8 +178,24 @@ impl Default for Obj2Brs {
 }
 
 impl Obj2Brs {
+    fn conversion_mode(&self) -> ConversionMode {
+        if self.grid_mesh {
+            ConversionMode::GridMesh
+        } else if self.rampify {
+            ConversionMode::Rampify
+        } else {
+            ConversionMode::Voxel
+        }
+    }
+
+    fn set_conversion_mode(&mut self, mode: ConversionMode) {
+        self.rampify = mode == ConversionMode::Rampify;
+        self.grid_mesh = mode == ConversionMode::GridMesh;
+    }
+
     /// Builds the UI-agnostic conversion options from the current app state.
     fn to_options(&self) -> ConvertOptions {
+        let mode = self.conversion_mode();
         ConvertOptions {
             bricktype: self.bricktype,
             brick_scale: self.brick_scale,
@@ -188,7 +214,8 @@ impl Obj2Brs {
             simplify: self.simplify,
             merge_algorithm: self.merge_algorithm,
             posterize: self.posterize,
-            rampify: self.rampify,
+            rampify: mode == ConversionMode::Rampify,
+            grid_mesh: mode == ConversionMode::GridMesh,
             rampify_terrain: self.rampify_terrain,
             rampify_corners: self.rampify_corners,
             split_by_material: self.split_by_material,
@@ -679,20 +706,18 @@ impl Obj2Brs {
     }
 
     fn bricks_card(&mut self, ui: &mut Ui) {
-        gui::form_grid(ui, "bricks_grid", |ui| {
-            ui.label("Brick type")
-                .on_hover_text("Which bricks make up the save. Default gives a stud texture.");
-            ui.add_enabled_ui(!self.rampify, |ui| {
-                ComboBox::from_id_salt("bricktype")
-                    .selected_text(format!("{:?}", &mut self.bricktype))
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.bricktype, BrickType::Microbricks, "Microbricks");
-                        ui.selectable_value(&mut self.bricktype, BrickType::Default, "Default");
-                        ui.selectable_value(&mut self.bricktype, BrickType::Tiles, "Tiles");
-                    });
-            });
-            ui.end_row();
+        self.conversion_tabs(ui);
+        ui.add_space(12.0);
+        match self.conversion_mode() {
+            ConversionMode::Voxel => self.voxel_options(ui),
+            ConversionMode::Rampify => self.rampify_options(ui),
+            ConversionMode::GridMesh => self.grid_mesh_options(ui),
+        }
 
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(10.0);
+        gui::form_grid(ui, "common_bricks_grid", |ui| {
             ui.label("Material");
             ComboBox::from_id_salt("material")
                 .selected_text(format!("{:?}", &mut self.material))
@@ -729,50 +754,137 @@ impl Obj2Brs {
                     .speed(0.1),
             );
             ui.end_row();
+        });
+    }
+
+    fn conversion_tabs(&mut self, ui: &mut Ui) {
+        let selected = self.conversion_mode();
+        let tab_width = ((ui.available_width() - 20.0) / 3.0).max(120.0);
+        ui.horizontal(|ui| {
+            for (mode, label) in [
+                (ConversionMode::Voxel, "Voxel"),
+                (ConversionMode::Rampify, "Rampify"),
+                (ConversionMode::GridMesh, "Grid Mesh · Experimental"),
+            ] {
+                let button = Button::new(RichText::new(label).strong())
+                    .selected(selected == mode);
+                if ui.add_sized([tab_width, 38.0], button).clicked() {
+                    self.set_conversion_mode(mode);
+                }
+            }
+        });
+    }
+
+    fn voxel_options(&mut self, ui: &mut Ui) {
+        ui.label(
+            RichText::new("Voxelizes the model, then packs occupied cells into rectangular bricks.")
+                .small()
+                .color(ui.visuals().weak_text_color()),
+        );
+        ui.add_space(8.0);
+        gui::form_grid(ui, "voxel_options_grid", |ui| {
+            ui.label("Brick type")
+                .on_hover_text("Which bricks make up the save. Default gives a stud texture.");
+            ComboBox::from_id_salt("bricktype")
+                .selected_text(format!("{:?}", self.bricktype))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.bricktype,
+                        BrickType::Microbricks,
+                        "Microbricks",
+                    );
+                    ui.selectable_value(&mut self.bricktype, BrickType::Default, "Default");
+                    ui.selectable_value(&mut self.bricktype, BrickType::Tiles, "Tiles");
+                });
+            ui.end_row();
 
             ui.label("Simplify").on_hover_text(
                 "Merge similar bricks for a less detailed model (reduces brick count)",
             );
-            ui.add_enabled(!self.rampify, Checkbox::new(&mut self.simplify, "Lossy — fewer bricks"));
+            ui.add(Checkbox::new(
+                &mut self.simplify,
+                "Lossy — fewer bricks",
+            ));
             ui.end_row();
 
             ui.label("Merge algorithm").on_hover_text(
                 "How voxels are packed into bricks. Squarish grows blocky bricks from each region's interior, leaving fewer seams on curved shells. Greedy grows long strips, which suit flat or boxy models.",
             );
-            ui.add_enabled_ui(!self.rampify, |ui| {
-                ComboBox::from_id_salt("merge_algorithm")
-                    .selected_text(format!("{:?}", &mut self.merge_algorithm))
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.merge_algorithm, MergeAlgorithm::Squarish, "Squarish");
-                        ui.selectable_value(&mut self.merge_algorithm, MergeAlgorithm::Greedy, "Greedy");
-                    });
-            });
+            ComboBox::from_id_salt("merge_algorithm")
+                .selected_text(format!("{:?}", self.merge_algorithm))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.merge_algorithm,
+                        MergeAlgorithm::Squarish,
+                        "Squarish",
+                    );
+                    ui.selectable_value(
+                        &mut self.merge_algorithm,
+                        MergeAlgorithm::Greedy,
+                        "Greedy",
+                    );
+                });
             ui.end_row();
 
-            ui.label("Rampify").on_hover_text(
-                "Replace exposed voxels with default ramps and wedges. Runs directly on the voxel octree, without creating one plate brick per voxel.",
-            );
-            ui.add(Checkbox::new(&mut self.rampify, "Smooth slopes"));
-            ui.end_row();
+            if self.bricktype == BrickType::Microbricks {
+                ui.label("Brick scale")
+                    .on_hover_text("Make microbricks bigger for a more pixelated result");
+                ui.add(
+                    DragValue::new(&mut self.brick_scale)
+                        .prefix("x")
+                        .range(1..=500),
+                );
+                ui.end_row();
+            }
+        });
+    }
 
+    fn rampify_options(&mut self, ui: &mut Ui) {
+        ui.label(
+            RichText::new(
+                "Voxelizes the model, then replaces exposed cells with default ramps and wedges.",
+            )
+            .small()
+            .color(ui.visuals().weak_text_color()),
+        );
+        ui.add_space(8.0);
+        gui::form_grid(ui, "rampify_options_grid", |ui| {
             ui.label("Terrain").on_hover_text(
                 "Only smooth upward-facing surfaces; undersides become plain bricks instead of inverted ramps",
             );
-            ui.add_enabled(
-                self.rampify,
-                Checkbox::new(&mut self.rampify_terrain, "Top surfaces only"),
-            );
+            ui.add(Checkbox::new(
+                &mut self.rampify_terrain,
+                "Top surfaces only",
+            ));
             ui.end_row();
 
             ui.label("Corner ramps").on_hover_text(
-                "Place corner ramp bricks (outer and inner) where two perpendicular slopes meet",
+                "Place corner ramp bricks where two perpendicular slopes meet",
             );
-            ui.add_enabled(
-                self.rampify,
-                Checkbox::new(&mut self.rampify_corners, "Smooth corners"),
-            );
+            ui.add(Checkbox::new(
+                &mut self.rampify_corners,
+                "Smooth corners",
+            ));
             ui.end_row();
         });
+    }
+
+    fn grid_mesh_options(&mut self, ui: &mut Ui) {
+        ui.label(
+            RichText::new(
+                "Converts each source face into one or two thin micro-wedges. Coplanar wedges share compatible frozen grids, and triangle pairs forming a coplanar quad are fitted together on one grid. Each face uses one averaged texture or material color.",
+            )
+            .small()
+            .color(ui.visuals().weak_text_color()),
+        );
+        ui.add_space(8.0);
+        ui.label(
+            RichText::new(
+                "⚠ Large grid meshes are transform-heavy. Prefabs above 2,000 generated grids may have trouble loading in game.",
+            )
+            .strong()
+            .color(Color32::from_rgb(255, 170, 90)),
+        );
     }
 
     fn advanced_options(&mut self, ui: &mut Ui, uuid_valid: bool) {
@@ -794,52 +906,43 @@ impl Obj2Brs {
         ));
         ui.end_row();
 
-        ui.label("Split by Material (Experimental)")
-            .on_hover_text("Process each OBJ material separately into frozen grids");
-        ui.add(Checkbox::new(
-            &mut self.split_by_material,
-            "Separate grids per material",
-        ));
-        ui.end_row();
-
-        if self.split_by_material {
-            ui.label("Grid Offset X")
-                .on_hover_text("Horizontal spacing between material grids");
-            ui.add(
-                DragValue::new(&mut self.grid_offset_x)
-                    .suffix(" units")
-                    .speed(10.0),
-            );
+        if self.conversion_mode() != ConversionMode::GridMesh {
+            ui.label("Split by Material (Experimental)")
+                .on_hover_text("Process each material separately into frozen grids");
+            ui.add(Checkbox::new(
+                &mut self.split_by_material,
+                "Separate grids per material",
+            ));
             ui.end_row();
 
-            ui.label("Grid Offset Y")
-                .on_hover_text("Forward/back spacing between material grids");
-            ui.add(
-                DragValue::new(&mut self.grid_offset_y)
-                    .suffix(" units")
-                    .speed(10.0),
-            );
-            ui.end_row();
+            if self.split_by_material {
+                ui.label("Grid Offset X")
+                    .on_hover_text("Horizontal spacing between material grids");
+                ui.add(
+                    DragValue::new(&mut self.grid_offset_x)
+                        .suffix(" units")
+                        .speed(10.0),
+                );
+                ui.end_row();
 
-            ui.label("Grid Offset Z")
-                .on_hover_text("Vertical spacing between material grids");
-            ui.add(
-                DragValue::new(&mut self.grid_offset_z)
-                    .suffix(" units")
-                    .speed(10.0),
-            );
-            ui.end_row();
-        }
+                ui.label("Grid Offset Y")
+                    .on_hover_text("Forward/back spacing between material grids");
+                ui.add(
+                    DragValue::new(&mut self.grid_offset_y)
+                        .suffix(" units")
+                        .speed(10.0),
+                );
+                ui.end_row();
 
-        if !self.rampify && self.bricktype == BrickType::Microbricks {
-            ui.label("Brick Scale")
-                .on_hover_text("Use this to make microbricks bigger for a more pixelated look");
-            ui.add(
-                DragValue::new(&mut self.brick_scale)
-                    .prefix("x")
-                    .range(1..=500),
-            );
-            ui.end_row();
+                ui.label("Grid Offset Z")
+                    .on_hover_text("Vertical spacing between material grids");
+                ui.add(
+                    DragValue::new(&mut self.grid_offset_z)
+                        .suffix(" units")
+                        .speed(10.0),
+                );
+                ui.end_row();
+            }
         }
 
         let id_color = bool_color(ui, uuid_valid);

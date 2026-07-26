@@ -6,6 +6,7 @@ use crate::octree;
 use crate::rampify;
 use crate::fbx;
 use crate::gltf_support;
+use crate::grid_mesh;
 use crate::simplify::*;
 use crate::stl;
 use crate::voxelize::voxelize;
@@ -62,6 +63,10 @@ pub struct ConvertOptions {
     pub posterize: bool,
     #[serde(default)]
     pub rampify: bool,
+    /// Experimental surface conversion: represent every source triangle with
+    /// one or two thin micro-wedges on independently rotated frozen grids.
+    #[serde(default)]
+    pub grid_mesh: bool,
     /// Rampify for terrain: only the upward-facing surface is smoothed with
     /// ramps; undersides become plain upright bricks instead of inverted ramps.
     #[serde(default)]
@@ -99,6 +104,7 @@ impl Default for ConvertOptions {
             merge_algorithm: MergeAlgorithm::default(),
             posterize: false,
             rampify: false,
+            grid_mesh: false,
             rampify_terrain: false,
             rampify_corners: true,
             split_by_material: false,
@@ -185,6 +191,8 @@ impl ModelBounds {
         // model unit is always exactly one stud.
         let stud_scale = if ldraw::is_ldraw_path(&options.input_file_path) {
             1.0
+        } else if options.grid_mesh {
+            options.scale
         } else {
             options.scale
                 * if !options.rampify && options.bricktype == BrickType::Microbricks {
@@ -878,6 +886,14 @@ f 2 3 7\nf 2 7 6\nf 3 4 8\nf 3 8 7\nf 4 1 5\nf 4 5 8\n";
 
 /// Runs a full conversion described by `opts`, writing the resulting save to disk.
 pub fn convert(opts: &ConvertOptions, skip_textures: bool) -> ConversionResult<()> {
+    if opts.grid_mesh {
+        opts.logger
+            .log("Building experimental grid mesh...".to_string());
+        let (models, material_images) = load_models_and_materials(opts, skip_textures)?;
+        let data = grid_mesh::build(&models, &material_images, opts)?;
+        return grid_mesh::write(opts, data);
+    }
+
     if opts.split_by_material {
         // Load models and materials once
         opts.logger.log("Loading models and materials...".to_string());
@@ -1068,12 +1084,15 @@ fn load_models_and_materials(
         }
     }
 
-    // Scale models
-    scale_models(
-        &mut models,
-        opt.scale,
-        if opt.rampify { BrickType::Default } else { opt.bricktype },
-    );
+    // Grid meshes consume the source-space triangles directly and convert
+    // them to Brickadia units after remapping Y-up into Z-up.
+    if !opt.grid_mesh {
+        scale_models(
+            &mut models,
+            opt.scale,
+            if opt.rampify { BrickType::Default } else { opt.bricktype },
+        );
+    }
 
     Ok((models, material_images))
 }
@@ -1106,11 +1125,13 @@ fn finish_prebaked_models(
         ));
     }
 
-    scale_models(
-        &mut models,
-        opt.scale,
-        if opt.rampify { BrickType::Default } else { opt.bricktype },
-    );
+    if !opt.grid_mesh {
+        scale_models(
+            &mut models,
+            opt.scale,
+            if opt.rampify { BrickType::Default } else { opt.bricktype },
+        );
+    }
 
     Ok((models, material_images))
 }
@@ -1153,12 +1174,14 @@ fn load_ldraw_models(
     }
 
     let mut models = loaded.models;
-    nudge_off_voxel_boundaries(&mut models);
-    scale_models(
-        &mut models,
-        ldraw_scale(opt),
-        if opt.rampify { BrickType::Default } else { opt.bricktype },
-    );
+    if !opt.grid_mesh {
+        nudge_off_voxel_boundaries(&mut models);
+        scale_models(
+            &mut models,
+            ldraw_scale(opt),
+            if opt.rampify { BrickType::Default } else { opt.bricktype },
+        );
+    }
 
     Ok((models, loaded.material_images))
 }
@@ -1317,11 +1340,13 @@ fn load_models_from_buf(
     }
 
     let material_images = vec![create_solid_color_texture([1.0, 1.0, 1.0], 1.0)];
-    scale_models(
-        &mut models,
-        opt.scale,
-        if opt.rampify { BrickType::Default } else { opt.bricktype },
-    );
+    if !opt.grid_mesh {
+        scale_models(
+            &mut models,
+            opt.scale,
+            if opt.rampify { BrickType::Default } else { opt.bricktype },
+        );
+    }
 
     Ok((models, material_images))
 }
@@ -1332,6 +1357,10 @@ fn load_models_from_buf(
 pub fn convert_obj_bytes_to_brz(opts: &ConvertOptions, obj_bytes: &[u8]) -> ConversionResult<Vec<u8>> {
     opts.logger.log("Importing model...".to_string());
     let (mut models, material_images) = load_models_from_buf(obj_bytes, opts)?;
+    if opts.grid_mesh {
+        let data = grid_mesh::build(&models, &material_images, opts)?;
+        return grid_mesh::brz_bytes(opts, data);
+    }
     let mut octree = voxelize_models(&mut models, &material_images, opts, None);
     let save_data = octree_to_save_data(&mut octree, opts, None)?;
     opts.logger.log(format!("Writing {} bricks...", save_data.bricks.len()));
@@ -1372,7 +1401,7 @@ fn octree_to_save_data(
 }
 
 /// Renders the bundled obj2brz icon to a JPEG for use as the save preview.
-fn obj_preview_jpg() -> ConversionResult<Vec<u8>> {
+pub(crate) fn obj_preview_jpg() -> ConversionResult<Vec<u8>> {
     let preview = image::load_from_memory_with_format(OBJ_ICON, image::ImageFormat::Png)
         .map_err(|e| ConversionError::SaveWriteError(format!("Failed to load preview icon: {}", e)))?;
 

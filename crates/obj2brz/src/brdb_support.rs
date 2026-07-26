@@ -1,7 +1,8 @@
+use crate::grid_mesh::GridMeshStats;
 use crate::{ConvertOptions, OutputFormat, SaveData};
 use crate::error::{ConversionError, ConversionResult};
 use std::path::{Path, PathBuf};
-use brdb::{Brz, BundleAuthor, Entity, Guid, Owner, World};
+use brdb::{assets, Brick, Brz, BundleAuthor, Entity, Guid, IntoReader, Owner, World};
 use uuid::Uuid;
 
 fn copy_path_to_clipboard(path: &Path, opts: &ConvertOptions) -> ConversionResult<()> {
@@ -17,7 +18,9 @@ fn copy_path_to_clipboard(path: &Path, opts: &ConvertOptions) -> ConversionResul
         .to_string();
 
     // Lowercase the first letter (drive letter on Windows)
-    full_path.get_mut(0..1).map(|s| s.make_ascii_lowercase());
+    if let Some(first) = full_path.get_mut(0..1) {
+        first.make_ascii_lowercase();
+    }
 
     #[cfg(target_os = "windows")]
     {
@@ -148,6 +151,83 @@ pub fn write_brz_grids(
     write_world(path, world, opts)
 }
 
+fn grid_mesh_world(
+    name: &str,
+    anchor: Brick,
+    grids: Vec<(Entity, Vec<Brick>)>,
+    stats: &GridMeshStats,
+    opts: &ConvertOptions,
+    preview_image: Option<Vec<u8>>,
+) -> ConversionResult<World> {
+    let mut world = World::new();
+    world.meta.screenshot = preview_image;
+    world.meta.bundle.name = name.to_string();
+    world.meta.bundle.authors = vec![BundleAuthor {
+        id: opts.save_owner_id.clone(),
+        name: opts.save_owner_name.clone(),
+    }];
+    world.meta.bundle.description = format!(
+        "Converted with obj2brz experimental grid meshes: {} source faces, {} subdivided, \
+         {} micro-wedges grouped onto {} frozen coplanar grids; endpoint RMS {:.3}, maximum {:.3} Brickadia units. \
+         The sole main-grid brick is an invisible, non-colliding prefab-bounds anchor.",
+        stats.source_triangles,
+        stats.subdivided_source_triangles,
+        stats.emitted_wedges,
+        stats.emitted_grids,
+        stats.rms_endpoint_error(),
+        stats.max_endpoint_error,
+    );
+    world.bricks.push(anchor);
+    for (entity, bricks) in grids {
+        world.add_brick_grid(entity, bricks);
+    }
+
+    configure_world(&mut world, opts)?;
+    // Grid entities require their full entity/component schema. This also
+    // follows the triangle-plane experiment's known-good writer sequence.
+    world.register_all_components();
+    world.make_prefab();
+    Ok(world)
+}
+
+pub fn write_grid_mesh(
+    path: PathBuf,
+    anchor: Brick,
+    grids: Vec<(Entity, Vec<Brick>)>,
+    stats: &GridMeshStats,
+    opts: &ConvertOptions,
+    preview_image: Option<Vec<u8>>,
+) -> ConversionResult<()> {
+    let name = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let expected_grids = stats.emitted_grids;
+    let expected_wedges = stats.emitted_wedges;
+    let world = grid_mesh_world(&name, anchor, grids, stats, opts, preview_image)?;
+    write_world(path.clone(), world, opts)?;
+    if opts.output_format == OutputFormat::Brz {
+        validate_grid_mesh_brz(&path, expected_grids, expected_wedges)?;
+        opts.logger.log(format!(
+            "Validated prefab anchor, {} wedges, and {} frozen grid transforms",
+            expected_wedges, expected_grids
+        ));
+    }
+    Ok(())
+}
+
+pub fn grid_mesh_brz_bytes(
+    name: &str,
+    anchor: Brick,
+    grids: Vec<(Entity, Vec<Brick>)>,
+    stats: &GridMeshStats,
+    opts: &ConvertOptions,
+    preview_image: Option<Vec<u8>>,
+) -> ConversionResult<Vec<u8>> {
+    let world = grid_mesh_world(name, anchor, grids, stats, opts, preview_image)?;
+    world_to_brz_bytes(&world)
+}
+
 fn configure_world(world: &mut World, opts: &ConvertOptions) -> ConversionResult<()> {
     let owner_id = Uuid::parse_str(&opts.save_owner_id)
         .map(Guid::from)
@@ -164,8 +244,12 @@ fn configure_world(world: &mut World, opts: &ConvertOptions) -> ConversionResult
         brick.owner_index = Some(1);
         brick.original_owner_index = Some(1);
         brick.material_intensity = opts.material_intensity as u8;
-        brick.collision.player = opts.player_collision;
-        brick.collision.physics = opts.physics_collision;
+        // Metadata-only bounds anchors are deliberately invisible and must
+        // remain non-colliding regardless of the visible-brick preferences.
+        if brick.visible {
+            brick.collision.player = opts.player_collision;
+            brick.collision.physics = opts.physics_collision;
+        }
     }
     for (entity, bricks) in &mut world.grids {
         entity.owner_index = Some(1);
@@ -184,6 +268,114 @@ fn configure_world(world: &mut World, opts: &ConvertOptions) -> ConversionResult
     world.make_prefab();
     world.register_used_components();
     Ok(())
+}
+
+fn validate_grid_mesh_brz(
+    path: &Path,
+    expected_grids: usize,
+    expected_wedges: usize,
+) -> ConversionResult<()> {
+    fn inner(
+        path: &Path,
+        expected_grids: usize,
+        expected_wedges: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let reader = Brz::open(path)?.into_reader();
+        if reader.prefab_json()?.is_none() {
+            return Err("grid mesh is missing Meta/Prefab.json".into());
+        }
+        let global = reader.global_data()?;
+
+        let mut main_count = 0;
+        for chunk in reader.brick_chunk_index(1)? {
+            let bricks = reader.brick_chunk_soa(1, chunk.index)?;
+            main_count += bricks.brick_type_indices.len();
+            for counter in bricks.brick_size_counters {
+                let asset = global
+                    .procedural_brick_asset_names
+                    .get_index(counter.asset_index as usize);
+                if asset.map(String::as_str)
+                    != Some(assets::bricks::PB_DEFAULT_MICRO_BRICK.as_ref())
+                {
+                    return Err("grid mesh main-grid anchor is not a microbrick".into());
+                }
+            }
+        }
+        if main_count != 1 {
+            return Err(format!(
+                "grid mesh has {main_count} main-grid bricks, expected one anchor"
+            )
+            .into());
+        }
+
+        let mut wedge_count = 0;
+        for grid_id in 2..=(expected_grids + 1) {
+            let mut brick_count = 0;
+            for chunk in reader.brick_chunk_index(grid_id)? {
+                let bricks = reader.brick_chunk_soa(grid_id, chunk.index)?;
+                brick_count += bricks.brick_type_indices.len();
+                for counter in bricks.brick_size_counters {
+                    let asset = global
+                        .procedural_brick_asset_names
+                        .get_index(counter.asset_index as usize);
+                    if asset.map(String::as_str)
+                        != Some(assets::bricks::PB_DEFAULT_MICRO_WEDGE.as_ref())
+                    {
+                        return Err(format!(
+                            "grid mesh dynamic grid {grid_id} does not contain a micro-wedge"
+                        )
+                        .into());
+                    }
+                }
+            }
+            if brick_count == 0 {
+                return Err(format!(
+                    "grid mesh dynamic grid {grid_id} has no micro-wedges"
+                )
+                .into());
+            }
+            wedge_count += brick_count;
+        }
+        if wedge_count != expected_wedges {
+            return Err(format!(
+                "grid mesh has {wedge_count} micro-wedges, expected {expected_wedges}"
+            )
+            .into());
+        }
+
+        let mut entity_count = 0;
+        for chunk in reader.entity_chunk_index()? {
+            for entity in reader.entity_chunk(chunk)? {
+                entity_count += 1;
+                let q = entity.rotation;
+                let magnitude = (q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w).sqrt();
+                if !entity.frozen
+                    || !entity.sleeping
+                    || !magnitude.is_finite()
+                    || (magnitude - 1.0).abs() > 0.001
+                {
+                    return Err(format!(
+                        "grid mesh entity {entity_count} has an invalid frozen transform"
+                    )
+                    .into());
+                }
+            }
+        }
+        if entity_count != expected_grids {
+            return Err(format!(
+                "grid mesh has {entity_count} entities, expected {expected_grids}"
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    inner(path, expected_grids, expected_wedges).map_err(|error| {
+        ConversionError::SaveWriteError(format!(
+            "grid mesh validation failed for {}: {error}",
+            path.display()
+        ))
+    })
 }
 
 fn write_world(path: PathBuf, world: World, opts: &ConvertOptions) -> ConversionResult<()> {

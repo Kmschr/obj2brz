@@ -34,6 +34,8 @@ OPTIONS:
         --rampify-terrain        Rampify for terrain: only smooth top surfaces,
                                  undersides become plain bricks (implies --rampify)
         --no-corner-ramps        Rampify with straight ramps and wedges only
+        --grid-mesh              Experimental: source faces become thin micro-wedges
+                                 grouped on compatible coplanar frozen grids
         --split-by-material      One frozen grid per OBJ material
         --grid-offset <X> <Y> <Z>  Spacing between material grids [default: 0 0 0]
         --owner-id <UUID>        Brick owner id
@@ -134,6 +136,7 @@ fn run() -> Result<(), String> {
                 opts.rampify_terrain = true;
             }
             Long("no-corner-ramps") => opts.rampify_corners = false,
+            Long("grid-mesh") => opts.grid_mesh = true,
             Long("split-by-material") => opts.split_by_material = true,
             Long("grid-offset") => {
                 opts.grid_offset_x = parser.value().map_err(|e| e.to_string())?.parse().map_err(|e| e.to_string())?;

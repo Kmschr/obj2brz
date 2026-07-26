@@ -10,6 +10,7 @@ mod convert;
 mod error;
 mod fbx;
 mod gltf_support;
+mod grid_mesh;
 mod intersect;
 mod ldraw;
 mod logger;

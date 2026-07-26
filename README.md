@@ -56,6 +56,16 @@ wedges. Rampify runs directly from the converter's voxel octree, rather than
 building an intermediate save containing one 1×1 plate per voxel, and works
 for both BRZ and BRDB output.
 
+Use `--grid-mesh` for the experimental surface path. Each source face becomes
+one or two thin micro-wedges, with one averaged texture/material color per
+face. Coplanar wedges share a frozen grid when their in-plane orientation and
+integer-local positioning are compatible. Adjacent triangles that form a
+convex coplanar quad are fitted against their shared diagonal so all of their
+wedges can use one grid. Scale 1 maps one model unit to one Brickadia stud.
+This representation preserves floating-point face planes but can still create
+up to two dynamic grids per source triangle in the worst case, so start with
+small models and inspect rendering, collision, and seams in game.
+
 Use `--material` to apply a Brickadia material such as `plastic`, `glass`,
 `glow`, `metallic`, `hologram`, or `ghost` to the whole export. Use
 `--no-player-collision` and/or `--no-physics-collision` for decorative models
