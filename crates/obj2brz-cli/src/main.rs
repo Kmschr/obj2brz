@@ -36,6 +36,7 @@ OPTIONS:
         --no-corner-ramps        Rampify with straight ramps and wedges only
         --grid-mesh              Experimental: source faces become thin micro-wedges
                                  grouped on compatible coplanar frozen grids
+        --wedge-thickness <F>    Grid-mesh wedge thickness in studs [default: 0.2]
         --split-by-material      One frozen grid per OBJ material
         --grid-offset <X> <Y> <Z>  Spacing between material grids [default: 0 0 0]
         --owner-id <UUID>        Brick owner id
@@ -137,6 +138,9 @@ fn run() -> Result<(), String> {
             }
             Long("no-corner-ramps") => opts.rampify_corners = false,
             Long("grid-mesh") => opts.grid_mesh = true,
+            Long("wedge-thickness") => {
+                opts.grid_mesh_wedge_thickness = parser.value().map_err(|e| e.to_string())?.parse().map_err(|e| e.to_string())?;
+            }
             Long("split-by-material") => opts.split_by_material = true,
             Long("grid-offset") => {
                 opts.grid_offset_x = parser.value().map_err(|e| e.to_string())?.parse().map_err(|e| e.to_string())?;

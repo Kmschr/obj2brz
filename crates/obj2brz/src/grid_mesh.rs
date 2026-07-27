@@ -28,9 +28,9 @@ const PLANE_NORMAL_KEY_SCALE: f32 = 1_000.0;
 const PLANE_DISTANCE_KEY_SCALE: f32 = 10.0;
 const VERTEX_KEY_SCALE: f32 = 1_000.0;
 const QUAD_PROJECTION_EPSILON: f32 = 1.0e-5;
-// Covers the wedge's two-unit thickness plus the worst-case endpoint growth
-// from clamping a very short leg to the minimum two-unit procedural length.
-const ANCHOR_PADDING: f32 = 5.0;
+// Extra room beyond wedge thickness for the worst-case endpoint growth from
+// clamping a very short leg to the minimum two-unit procedural length.
+const ANCHOR_EXTRA_PADDING: f32 = 3.0;
 
 pub(crate) struct GridMeshData {
     pub anchor: Brick,
@@ -115,6 +115,7 @@ pub(crate) fn build(
     materials: &[RgbaImage],
     opts: &ConvertOptions,
 ) -> ConversionResult<GridMeshData> {
+    let wedge_half_thickness = wedge_half_thickness(opts.grid_mesh_wedge_thickness)?;
     let scale = if crate::ldraw::is_ldraw_path(&opts.input_file_path) {
         GAME_UNITS_PER_STUD
     } else {
@@ -186,6 +187,7 @@ pub(crate) fn build(
     let anchor = bounds_anchor(
         transform_point(min, scale, vertical_offset),
         transform_point(max, scale, vertical_offset),
+        f32::from(wedge_half_thickness) * 2.0,
     )?;
 
     Ok(GridMeshData {
@@ -636,6 +638,7 @@ fn add_right_triangle(
     let z_axis = x_axis.cross(y_axis).normalize();
     let x_half = half_extent(ab.magnitude(), "X")?;
     let y_half = half_extent(ac.dot(y_axis).abs(), "Y")?;
+    let z_half = wedge_half_thickness(opts.grid_mesh_wedge_thickness)?;
     let x_length = f32::from(x_half) * 2.0;
     let y_length = f32::from(y_half) * 2.0;
     let location = a + x_axis * (x_length * 0.5) + y_axis * (y_length * 0.5);
@@ -649,9 +652,9 @@ fn add_right_triangle(
         brick: Brick {
             asset: BrickType::Procedural {
                 asset: assets::bricks::PB_DEFAULT_MICRO_WEDGE,
-                size: BrickSize::new(x_half, y_half, 1),
+                size: BrickSize::new(x_half, y_half, z_half),
             },
-            position: (0, 0, -1).into(),
+            position: (0, 0, -i32::from(z_half)).into(),
             color,
             material: material_name(opts.material).into(),
             collision: Collision {
@@ -736,7 +739,7 @@ impl GridGroup {
             wedge.endpoint_errors[0].magnitude(),
             wedge.endpoint_errors[1].magnitude(),
         );
-        wedge.brick.position = (0, 0, -1).into();
+        wedge.brick.position = (0, 0, wedge_z_position(&wedge.brick)).into();
         wedge.brick.rotation = Rotation::Deg0;
         Self {
             center: wedge.center,
@@ -771,7 +774,7 @@ impl GridGroup {
         }
 
         let mut brick = wedge.brick.clone();
-        brick.position = (rounded_x as i32, rounded_y as i32, -1).into();
+        brick.position = (rounded_x as i32, rounded_y as i32, wedge_z_position(&brick)).into();
         brick.rotation = rotation;
         // Procedural micro-wedges have triangular footprints. Quantizing the
         // two legs of an altitude split can make its otherwise adjacent
@@ -901,6 +904,23 @@ fn half_extent(length: f32, axis: &str) -> ConversionResult<u16> {
     Ok(rounded as u16)
 }
 
+fn wedge_half_thickness(thickness_studs: f32) -> ConversionResult<u16> {
+    let half_extent = (thickness_studs * GAME_UNITS_PER_STUD * 0.5).round();
+    if !half_extent.is_finite() || half_extent < 1.0 || half_extent > f32::from(u16::MAX) {
+        return Err(ConversionError::ObjParseError(
+            "grid mesh wedge thickness is outside Brickadia's procedural size range".to_string(),
+        ));
+    }
+    Ok(half_extent as u16)
+}
+
+fn wedge_z_position(brick: &Brick) -> i32 {
+    let BrickType::Procedural { size, .. } = &brick.asset else {
+        unreachable!("grid mesh groups only contain procedural micro-wedges");
+    };
+    -i32::from(size.z)
+}
+
 fn vector3f(vector: Vector3<f32>) -> Vector3f {
     Vector3f {
         x: vector.x,
@@ -956,22 +976,29 @@ fn quat_from_basis(x_axis: Vector3<f32>, y_axis: Vector3<f32>, z_axis: Vector3<f
     }
 }
 
-fn bounds_anchor(min: Vector3<f32>, max: Vector3<f32>) -> ConversionResult<Brick> {
+fn bounds_anchor(
+    min: Vector3<f32>,
+    max: Vector3<f32>,
+    wedge_thickness: f32,
+) -> ConversionResult<Brick> {
     let center = (min + max) * 0.5;
     let rounded_center = Vector3::new(center.x.round(), center.y.round(), center.z.round());
     let half = Vector3::new(
         (max.x - rounded_center.x)
             .abs()
             .max((min.x - rounded_center.x).abs())
-            + ANCHOR_PADDING,
+            + wedge_thickness
+            + ANCHOR_EXTRA_PADDING,
         (max.y - rounded_center.y)
             .abs()
             .max((min.y - rounded_center.y).abs())
-            + ANCHOR_PADDING,
+            + wedge_thickness
+            + ANCHOR_EXTRA_PADDING,
         (max.z - rounded_center.z)
             .abs()
             .max((min.z - rounded_center.z).abs())
-            + ANCHOR_PADDING,
+            + wedge_thickness
+            + ANCHOR_EXTRA_PADDING,
     );
     let size = BrickSize::new(
         anchor_half_extent(half.x, "X")?,
@@ -1147,6 +1174,30 @@ mod tests {
         assert_eq!(data.stats.emitted_grids, 1);
         assert!(!data.anchor.visible);
         assert!(!data.anchor.collision.player);
+    }
+
+    #[test]
+    fn wedge_thickness_extends_behind_the_source_face() {
+        let opts = ConvertOptions {
+            grid_mesh_wedge_thickness: 1.0,
+            ..options()
+        };
+        let data = build(
+            &[model(
+                &[[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, 3.0]],
+                &[0, 1, 2],
+            )],
+            &[RgbaImage::from_pixel(1, 1, image::Rgba([255; 4]))],
+            &opts,
+        )
+        .unwrap();
+
+        let brick = &data.grids[0].1[0];
+        let BrickType::Procedural { size, .. } = &brick.asset else {
+            panic!("expected a procedural micro-wedge");
+        };
+        assert_eq!(size.z, 5);
+        assert_eq!(brick.position.z, -5);
     }
 
     #[test]

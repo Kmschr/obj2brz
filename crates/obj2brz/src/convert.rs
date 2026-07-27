@@ -67,6 +67,10 @@ pub struct ConvertOptions {
     /// one or two thin micro-wedges on independently rotated frozen grids.
     #[serde(default)]
     pub grid_mesh: bool,
+    /// Full thickness of grid-mesh wedges in Brickadia studs. Procedural
+    /// micro-wedges quantize this to two-game-unit increments.
+    #[serde(default = "default_grid_mesh_wedge_thickness")]
+    pub grid_mesh_wedge_thickness: f32,
     /// Rampify for terrain: only the upward-facing surface is smoothed with
     /// ramps; undersides become plain upright bricks instead of inverted ramps.
     #[serde(default)]
@@ -105,6 +109,7 @@ impl Default for ConvertOptions {
             posterize: false,
             rampify: false,
             grid_mesh: false,
+            grid_mesh_wedge_thickness: default_grid_mesh_wedge_thickness(),
             rampify_terrain: false,
             rampify_corners: true,
             split_by_material: false,
@@ -126,6 +131,10 @@ const fn default_rampify_corners() -> bool {
 
 const fn default_physics_collision() -> bool {
     true
+}
+
+const fn default_grid_mesh_wedge_thickness() -> f32 {
+    0.2
 }
 
 /// How merged bricks are grown out of the voxel grid.
@@ -211,6 +220,14 @@ impl ConvertOptions {
     pub fn settings_error(&self) -> Option<String> {
         if !self.scale.is_finite() || self.scale <= 0.0 {
             return Some("Scale must be a positive, finite number.".to_string());
+        }
+        if self.grid_mesh
+            && (!self.grid_mesh_wedge_thickness.is_finite()
+                || !(0.2..=13_107.0).contains(&self.grid_mesh_wedge_thickness))
+        {
+            return Some(
+                "Grid mesh wedge thickness must be between 0.2 and 13,107 studs.".to_string(),
+            );
         }
         if self.save_name.trim().is_empty()
             || self.save_name.contains(['/', '\\'])

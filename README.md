@@ -62,6 +62,8 @@ face. Coplanar wedges share a frozen grid when their in-plane orientation and
 integer-local positioning are compatible. Adjacent triangles that form a
 convex coplanar quad are fitted against their shared diagonal so all of their
 wedges can use one grid. Scale 1 maps one model unit to one Brickadia stud.
+Use `--wedge-thickness` to make those wedges thicker than the minimum 0.2
+studs; the value is rounded to the nearest 0.2 studs.
 This representation preserves floating-point face planes but can still create
 up to two dynamic grids per source triangle in the worst case, so start with
 small models and inspect rendering, collision, and seams in game.

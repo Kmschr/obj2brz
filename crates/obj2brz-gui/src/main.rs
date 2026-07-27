@@ -78,6 +78,8 @@ pub struct Obj2Brs {
     rampify: bool,
     #[serde(default)]
     grid_mesh: bool,
+    #[serde(default = "default_grid_mesh_wedge_thickness")]
+    grid_mesh_wedge_thickness: f32,
     #[serde(default)]
     rampify_terrain: bool,
     #[serde(default = "default_rampify_corners")]
@@ -125,6 +127,10 @@ fn default_physics_collision() -> bool {
     true
 }
 
+fn default_grid_mesh_wedge_thickness() -> f32 {
+    0.2
+}
+
 fn format_studs(value: f32) -> String {
     let formatted = format!("{value:.1}");
     formatted.trim_end_matches('0').trim_end_matches('.').to_string()
@@ -157,6 +163,7 @@ impl Default for Obj2Brs {
             posterize: false,
             rampify: false,
             grid_mesh: false,
+            grid_mesh_wedge_thickness: default_grid_mesh_wedge_thickness(),
             rampify_terrain: false,
             rampify_corners: true,
             split_by_material: false,
@@ -216,6 +223,7 @@ impl Obj2Brs {
             posterize: self.posterize,
             rampify: mode == ConversionMode::Rampify,
             grid_mesh: mode == ConversionMode::GridMesh,
+            grid_mesh_wedge_thickness: self.grid_mesh_wedge_thickness,
             rampify_terrain: self.rampify_terrain,
             rampify_corners: self.rampify_corners,
             split_by_material: self.split_by_material,
@@ -877,6 +885,20 @@ impl Obj2Brs {
             .small()
             .color(ui.visuals().weak_text_color()),
         );
+        ui.add_space(8.0);
+        gui::form_grid(ui, "grid_mesh_options_grid", |ui| {
+            ui.label("Wedge thickness").on_hover_text(
+                "Full thickness perpendicular to each source face. Brickadia rounds this to the nearest 0.2 studs.",
+            );
+            ui.add(
+                DragValue::new(&mut self.grid_mesh_wedge_thickness)
+                    .range(0.2..=13_107.0)
+                    .speed(0.1)
+                    .min_decimals(1)
+                    .suffix(" studs"),
+            );
+            ui.end_row();
+        });
         ui.add_space(8.0);
         ui.label(
             RichText::new(
