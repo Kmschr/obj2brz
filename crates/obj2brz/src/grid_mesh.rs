@@ -654,7 +654,7 @@ fn add_right_triangle(
                 asset: assets::bricks::PB_DEFAULT_MICRO_WEDGE,
                 size: BrickSize::new(x_half, y_half, z_half),
             },
-            position: (0, 0, -i32::from(z_half)).into(),
+            position: (0, 0, i32::from(z_half)).into(),
             color,
             material: material_name(opts.material).into(),
             collision: Collision {
@@ -918,7 +918,7 @@ fn wedge_z_position(brick: &Brick) -> i32 {
     let BrickType::Procedural { size, .. } = &brick.asset else {
         unreachable!("grid mesh groups only contain procedural micro-wedges");
     };
-    -i32::from(size.z)
+    i32::from(size.z)
 }
 
 fn vector3f(vector: Vector3<f32>) -> Vector3f {
@@ -1177,7 +1177,7 @@ mod tests {
     }
 
     #[test]
-    fn wedge_thickness_extends_behind_the_source_face() {
+    fn wedge_thickness_extends_along_the_source_face_normal() {
         let opts = ConvertOptions {
             grid_mesh_wedge_thickness: 1.0,
             ..options()
@@ -1197,7 +1197,7 @@ mod tests {
             panic!("expected a procedural micro-wedge");
         };
         assert_eq!(size.z, 5);
-        assert_eq!(brick.position.z, -5);
+        assert_eq!(brick.position.z, 5);
     }
 
     #[test]
